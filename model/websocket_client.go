@@ -24,7 +24,10 @@ type WebSocketClient struct {
 func NewWebSocketClient(url, authToken string) (*WebSocketClient, *AppError) {
 	header := http.Header{}
 	header.Set(HEADER_AUTH, "BEARER "+authToken)
-	conn, _, err := websocket.DefaultDialer.Dial(url+API_URL_SUFFIX+"/users/websocket", header)
+	dialer := websocket.Dialer{
+                TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+        }
+        conn, _, err := dialer.Dial(url+API_URL_SUFFIX+"/users/websocket", header)
 	if err != nil {
 		return nil, NewLocAppError("NewWebSocketClient", "model.websocket_client.connect_fail.app_error", nil, err.Error())
 	}
