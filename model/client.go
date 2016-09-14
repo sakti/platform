@@ -63,7 +63,11 @@ type Client struct {
 // NewClient constructs a new client with convienence methods for talking to
 // the server.
 func NewClient(url string) *Client {
-	return &Client{url, url + API_URL_SUFFIX, &http.Client{}, "", "", "", "", "", ""}
+	tr := &http.Transport{
+                TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+        }
+        client := &http.Client{Transport: tr}
+        return &Client{url, url + API_URL_SUFFIX, client, "", "", "", "", "", ""}
 }
 
 func closeBody(r *http.Response) {
