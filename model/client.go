@@ -5,8 +5,8 @@ package model
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
-	l4g "github.com/alecthomas/log4go"
 	"io"
 	"io/ioutil"
 	"mime/multipart"
@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	l4g "github.com/alecthomas/log4go"
 )
 
 const (
@@ -64,10 +66,10 @@ type Client struct {
 // the server.
 func NewClient(url string) *Client {
 	tr := &http.Transport{
-                TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-        }
-        client := &http.Client{Transport: tr}
-        return &Client{url, url + API_URL_SUFFIX, client, "", "", "", "", "", ""}
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	client := &http.Client{Transport: tr}
+	return &Client{url, url + API_URL_SUFFIX, client, "", "", "", "", "", ""}
 }
 
 func closeBody(r *http.Response) {
@@ -93,7 +95,7 @@ func (c *Client) SetTeamId(teamId string) {
 
 func (c *Client) GetTeamId() string {
 	if len(c.TeamId) == 0 {
-		println(`You are trying to use a route that requires a team_id, 
+		println(`You are trying to use a route that requires a team_id,
         	but you have not called SetTeamId() in client.go`)
 	}
 

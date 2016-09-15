@@ -4,9 +4,11 @@
 package model
 
 import (
+	"crypto/tls"
 	"encoding/json"
-	"github.com/gorilla/websocket"
 	"net/http"
+
+	"github.com/gorilla/websocket"
 )
 
 type WebSocketClient struct {
@@ -25,9 +27,9 @@ func NewWebSocketClient(url, authToken string) (*WebSocketClient, *AppError) {
 	header := http.Header{}
 	header.Set(HEADER_AUTH, "BEARER "+authToken)
 	dialer := websocket.Dialer{
-                TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-        }
-        conn, _, err := dialer.Dial(url+API_URL_SUFFIX+"/users/websocket", header)
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}
+	conn, _, err := dialer.Dial(url+API_URL_SUFFIX+"/users/websocket", header)
 	if err != nil {
 		return nil, NewLocAppError("NewWebSocketClient", "model.websocket_client.connect_fail.app_error", nil, err.Error())
 	}
