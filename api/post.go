@@ -21,6 +21,7 @@ import (
 
 	l4g "github.com/alecthomas/log4go"
 	"github.com/gorilla/mux"
+	"github.com/mattermost/platform/einterfaces"
 	"github.com/mattermost/platform/model"
 	"github.com/mattermost/platform/store"
 	"github.com/mattermost/platform/utils"
@@ -35,20 +36,21 @@ const (
 func InitPost() {
 	l4g.Debug(utils.T("api.post.init.debug"))
 
-	BaseRoutes.NeedTeam.Handle("/posts/search", ApiUserRequired(searchPosts)).Methods("POST")
-	BaseRoutes.NeedTeam.Handle("/posts/flagged/{offset:[0-9]+}/{limit:[0-9]+}", ApiUserRequiredActivity(getFlaggedPosts, false)).Methods("GET")
+	BaseRoutes.NeedTeam.Handle("/posts/search", ApiUserRequiredActivity(searchPosts, true)).Methods("POST")
+	BaseRoutes.NeedTeam.Handle("/posts/flagged/{offset:[0-9]+}/{limit:[0-9]+}", ApiUserRequired(getFlaggedPosts)).Methods("GET")
 	BaseRoutes.NeedTeam.Handle("/posts/{post_id}", ApiUserRequired(getPostById)).Methods("GET")
 	BaseRoutes.NeedTeam.Handle("/pltmp/{post_id}", ApiUserRequired(getPermalinkTmp)).Methods("GET")
 
-	BaseRoutes.Posts.Handle("/create", ApiUserRequired(createPost)).Methods("POST")
-	BaseRoutes.Posts.Handle("/update", ApiUserRequired(updatePost)).Methods("POST")
-	BaseRoutes.Posts.Handle("/page/{offset:[0-9]+}/{limit:[0-9]+}", ApiUserRequiredActivity(getPosts, false)).Methods("GET")
-	BaseRoutes.Posts.Handle("/since/{time:[0-9]+}", ApiUserRequiredActivity(getPostsSince, false)).Methods("GET")
+	BaseRoutes.Posts.Handle("/create", ApiUserRequiredActivity(createPost, true)).Methods("POST")
+	BaseRoutes.Posts.Handle("/update", ApiUserRequiredActivity(updatePost, true)).Methods("POST")
+	BaseRoutes.Posts.Handle("/page/{offset:[0-9]+}/{limit:[0-9]+}", ApiUserRequired(getPosts)).Methods("GET")
+	BaseRoutes.Posts.Handle("/since/{time:[0-9]+}", ApiUserRequired(getPostsSince)).Methods("GET")
 
 	BaseRoutes.NeedPost.Handle("/get", ApiUserRequired(getPost)).Methods("GET")
-	BaseRoutes.NeedPost.Handle("/delete", ApiUserRequired(deletePost)).Methods("POST")
+	BaseRoutes.NeedPost.Handle("/delete", ApiUserRequiredActivity(deletePost, true)).Methods("POST")
 	BaseRoutes.NeedPost.Handle("/before/{offset:[0-9]+}/{num_posts:[0-9]+}", ApiUserRequired(getPostsBefore)).Methods("GET")
 	BaseRoutes.NeedPost.Handle("/after/{offset:[0-9]+}/{num_posts:[0-9]+}", ApiUserRequired(getPostsAfter)).Methods("GET")
+	BaseRoutes.NeedPost.Handle("/get_file_infos", ApiUserRequired(getFileInfosForPost)).Methods("GET")
 }
 
 func createPost(c *Context, w http.ResponseWriter, r *http.Request) {
@@ -131,51 +133,40 @@ func CreatePost(c *Context, post *model.Post, triggerWebhooks bool) (*model.Post
 		}
 	}
 
-	post.CreateAt = 0
+	if post.CreateAt != 0 && !HasPermissionToContext(c, model.PERMISSION_MANAGE_SYSTEM) {
+		post.CreateAt = 0
+		c.Err = nil
+	}
 
 	post.Hashtags, _ = model.ParseHashtags(post.Message)
-
-	if len(post.Filenames) > 0 {
-		doRemove := false
-		for i := len(post.Filenames) - 1; i >= 0; i-- {
-			path := post.Filenames[i]
-
-			doRemove = false
-			if model.UrlRegex.MatchString(path) {
-				continue
-			} else if model.PartialUrlRegex.MatchString(path) {
-				matches := model.PartialUrlRegex.FindAllStringSubmatch(path, -1)
-				if len(matches) == 0 || len(matches[0]) < 4 {
-					doRemove = true
-				}
-
-				channelId := matches[0][1]
-				if channelId != post.ChannelId {
-					doRemove = true
-				}
-
-				userId := matches[0][2]
-				if userId != post.UserId {
-					doRemove = true
-				}
-			} else {
-				doRemove = true
-			}
-			if doRemove {
-				l4g.Error(utils.T("api.post.create_post.bad_filename.error"), path)
-				post.Filenames = append(post.Filenames[:i], post.Filenames[i+1:]...)
-			}
-		}
-	}
 
 	var rpost *model.Post
 	if result := <-Srv.Store.Post().Save(post); result.Err != nil {
 		return nil, result.Err
 	} else {
 		rpost = result.Data.(*model.Post)
-
-		go handlePostEvents(c, rpost, triggerWebhooks)
 	}
+
+	if einterfaces.GetMetricsInterface() != nil {
+		einterfaces.GetMetricsInterface().IncrementPostCreate()
+	}
+
+	if len(post.FileIds) > 0 {
+		// There's a rare bug where the client sends up duplicate FileIds so protect against that
+		post.FileIds = utils.RemoveDuplicatesFromStringArray(post.FileIds)
+
+		for _, fileId := range post.FileIds {
+			if result := <-Srv.Store.FileInfo().AttachToPost(fileId, post.Id); result.Err != nil {
+				l4g.Error(utils.T("api.post.create_post.attach_files.error"), post.Id, post.FileIds, c.Session.UserId, result.Err)
+			}
+		}
+
+		if einterfaces.GetMetricsInterface() != nil {
+			einterfaces.GetMetricsInterface().IncrementPostFileAttachment(len(post.FileIds))
+		}
+	}
+
+	handlePostEvents(c, rpost, triggerWebhooks)
 
 	return rpost, nil
 }
@@ -271,7 +262,7 @@ func handlePostEvents(c *Context, post *model.Post, triggerWebhooks bool) {
 		channel = result.Data.(*model.Channel)
 	}
 
-	go sendNotifications(c, post, team, channel)
+	sendNotifications(c, post, team, channel)
 
 	var user *model.User
 	if result := <-uchan; result.Err != nil {
@@ -286,11 +277,11 @@ func handlePostEvents(c *Context, post *model.Post, triggerWebhooks bool) {
 	}
 
 	if channel.Type == model.CHANNEL_DIRECT {
-		go makeDirectChannelVisible(c.TeamId, post.ChannelId)
+		go makeDirectChannelVisible(post.ChannelId)
 	}
 }
 
-func makeDirectChannelVisible(teamId string, channelId string) {
+func makeDirectChannelVisible(channelId string) {
 	var members []model.ChannelMember
 	if result := <-Srv.Store.Channel().GetMembers(channelId); result.Err != nil {
 		l4g.Error(utils.T("api.post.make_direct_channel_visible.get_members.error"), channelId, result.Err.Message)
@@ -320,7 +311,7 @@ func makeDirectChannelVisible(teamId string, channelId string) {
 			if saveResult := <-Srv.Store.Preference().Save(&model.Preferences{*preference}); saveResult.Err != nil {
 				l4g.Error(utils.T("api.post.make_direct_channel_visible.save_pref.error"), member.UserId, otherUserId, saveResult.Err.Message)
 			} else {
-				message := model.NewWebSocketEvent(teamId, channelId, member.UserId, model.WEBSOCKET_EVENT_PREFERENCE_CHANGED)
+				message := model.NewWebSocketEvent(model.WEBSOCKET_EVENT_PREFERENCE_CHANGED, "", "", member.UserId, nil)
 				message.Add("preference", preference.ToJson())
 
 				go Publish(message)
@@ -335,7 +326,7 @@ func makeDirectChannelVisible(teamId string, channelId string) {
 				if updateResult := <-Srv.Store.Preference().Save(&model.Preferences{preference}); updateResult.Err != nil {
 					l4g.Error(utils.T("api.post.make_direct_channel_visible.update_pref.error"), member.UserId, otherUserId, updateResult.Err.Message)
 				} else {
-					message := model.NewWebSocketEvent(teamId, channelId, member.UserId, model.WEBSOCKET_EVENT_PREFERENCE_CHANGED)
+					message := model.NewWebSocketEvent(model.WEBSOCKET_EVENT_PREFERENCE_CHANGED, "", "", member.UserId, nil)
 					message.Add("preference", preference.ToJson())
 
 					go Publish(message)
@@ -462,40 +453,34 @@ func handleWebhookEvents(c *Context, post *model.Post, team *model.Team, channel
 	}
 }
 
-// Given a map of user IDs to profiles and a map of user IDs of channel members, returns a list of mention
-// keywords for all users on the team. Users that are members of the channel will have all their mention
-// keywords returned while users that aren't in the channel will only have their @mentions returned.
-func getMentionKeywords(profiles map[string]*model.User, members map[string]string) map[string][]string {
+// Given a map of user IDs to profiles, returns a list of mention
+// keywords for all users in the channel.
+func getMentionKeywordsInChannel(profiles map[string]*model.User) map[string][]string {
 	keywords := make(map[string][]string)
 
 	for id, profile := range profiles {
-		_, inChannel := members[id]
+		userMention := "@" + strings.ToLower(profile.Username)
+		keywords[userMention] = append(keywords[userMention], id)
 
-		if inChannel {
-			if len(profile.NotifyProps["mention_keys"]) > 0 {
-				// Add all the user's mention keys
-				splitKeys := strings.Split(profile.NotifyProps["mention_keys"], ",")
-				for _, k := range splitKeys {
-					// note that these are made lower case so that we can do a case insensitive check for them
-					key := strings.ToLower(k)
-					keywords[key] = append(keywords[key], id)
-				}
+		if len(profile.NotifyProps["mention_keys"]) > 0 {
+			// Add all the user's mention keys
+			splitKeys := strings.Split(profile.NotifyProps["mention_keys"], ",")
+			for _, k := range splitKeys {
+				// note that these are made lower case so that we can do a case insensitive check for them
+				key := strings.ToLower(k)
+				keywords[key] = append(keywords[key], id)
 			}
+		}
 
-			// If turned on, add the user's case sensitive first name
-			if profile.NotifyProps["first_name"] == "true" {
-				keywords[profile.FirstName] = append(keywords[profile.FirstName], profile.Id)
-			}
+		// If turned on, add the user's case sensitive first name
+		if profile.NotifyProps["first_name"] == "true" {
+			keywords[profile.FirstName] = append(keywords[profile.FirstName], profile.Id)
+		}
 
-			// Add @channel and @all to keywords if user has them turned on
-			if profile.NotifyProps["channel"] == "true" {
-				keywords["@channel"] = append(keywords["@channel"], profile.Id)
-				keywords["@all"] = append(keywords["@all"], profile.Id)
-			}
-		} else {
-			// user isn't in channel, so just look for @mentions
-			key := "@" + strings.ToLower(profile.Username)
-			keywords[key] = append(keywords[key], id)
+		// Add @channel and @all to keywords if user has them turned on
+		if int64(len(profiles)) < *utils.Cfg.TeamSettings.MaxNotificationsPerChannel && profile.NotifyProps["channel"] == "true" {
+			keywords["@channel"] = append(keywords["@channel"], profile.Id)
+			keywords["@all"] = append(keywords["@all"], profile.Id)
 		}
 	}
 
@@ -503,10 +488,14 @@ func getMentionKeywords(profiles map[string]*model.User, members map[string]stri
 }
 
 // Given a message and a map mapping mention keywords to the users who use them, returns a map of mentioned
-// users and whether or not @here was mentioned.
-func getExplicitMentions(message string, keywords map[string][]string) (map[string]bool, bool) {
+// users and a slice of potencial mention users not in the channel and whether or not @here was mentioned.
+func getExplicitMentions(message string, keywords map[string][]string) (map[string]bool, []string, bool, bool, bool) {
 	mentioned := make(map[string]bool)
+	potentialOthersMentioned := make([]string, 0)
+	systemMentions := map[string]bool{"@here": true, "@channel": true, "@all": true}
 	hereMentioned := false
+	allMentioned := false
+	channelMentioned := false
 
 	addMentionedUsers := func(ids []string) {
 		for _, id := range ids {
@@ -519,6 +508,14 @@ func getExplicitMentions(message string, keywords map[string][]string) (map[stri
 
 		if word == "@here" {
 			hereMentioned = true
+		}
+
+		if word == "@channel" {
+			channelMentioned = true
+		}
+
+		if word == "@all" {
+			allMentioned = true
 		}
 
 		// Non-case-sensitive check for regular keys
@@ -545,6 +542,14 @@ func getExplicitMentions(message string, keywords map[string][]string) (map[stri
 					hereMentioned = true
 				}
 
+				if splitWord == "@all" {
+					allMentioned = true
+				}
+
+				if splitWord == "@channel" {
+					channelMentioned = true
+				}
+
 				// Non-case-sensitive check for regular keys
 				if ids, match := keywords[strings.ToLower(splitWord)]; match {
 					addMentionedUsers(ids)
@@ -553,56 +558,40 @@ func getExplicitMentions(message string, keywords map[string][]string) (map[stri
 				// Case-sensitive check for first name
 				if ids, match := keywords[splitWord]; match {
 					addMentionedUsers(ids)
+				} else if _, ok := systemMentions[word]; !ok && strings.HasPrefix(word, "@") {
+					username := word[1:len(splitWord)]
+					potentialOthersMentioned = append(potentialOthersMentioned, username)
 				}
 			}
 		}
 	}
 
-	return mentioned, hereMentioned
+	return mentioned, potentialOthersMentioned, hereMentioned, channelMentioned, allMentioned
 }
 
-func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *model.Channel) {
-	// get profiles for all users we could be mentioning
-	pchan := Srv.Store.User().GetProfiles(c.TeamId)
-	dpchan := Srv.Store.User().GetDirectProfiles(c.Session.UserId)
-	mchan := Srv.Store.Channel().GetMembers(post.ChannelId)
+func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *model.Channel) []string {
+	pchan := Srv.Store.User().GetProfilesInChannel(channel.Id, -1, -1, true)
+	fchan := Srv.Store.FileInfo().GetForPost(post.Id)
 
 	var profileMap map[string]*model.User
 	if result := <-pchan; result.Err != nil {
 		l4g.Error(utils.T("api.post.handle_post_events_and_forget.profiles.error"), c.TeamId, result.Err)
-		return
+		return nil
 	} else {
 		profileMap = result.Data.(map[string]*model.User)
 	}
 
-	if result := <-dpchan; result.Err != nil {
-		l4g.Error(utils.T("api.post.handle_post_events_and_forget.profiles.error"), c.TeamId, result.Err)
-		return
-	} else {
-		dps := result.Data.(map[string]*model.User)
-		for k, v := range dps {
-			profileMap[k] = v
-		}
-	}
-
+	// If the user who made the post is mention don't send a notification
 	if _, ok := profileMap[post.UserId]; !ok {
 		l4g.Error(utils.T("api.post.send_notifications_and_forget.user_id.error"), post.UserId)
-		return
-	}
-	// using a map as a pseudo-set since we're checking for containment a lot
-	members := make(map[string]string)
-	if result := <-mchan; result.Err != nil {
-		l4g.Error(utils.T("api.post.handle_post_events_and_forget.members.error"), post.ChannelId, result.Err)
-		return
-	} else {
-		for _, member := range result.Data.([]model.ChannelMember) {
-			members[member.UserId] = member.UserId
-		}
+		return nil
 	}
 
 	mentionedUserIds := make(map[string]bool)
 	allActivityPushUserIds := []string{}
 	hereNotification := false
+	channelNotification := false
+	allNotification := false
 	updateMentionChans := []store.StoreChannel{}
 
 	if channel.Type == model.CHANNEL_DIRECT {
@@ -614,25 +603,27 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 		}
 
 		mentionedUserIds[otherUserId] = true
+		if post.Props["from_webhook"] == "true" {
+			mentionedUserIds[post.UserId] = true
+		}
 	} else {
-		keywords := getMentionKeywords(profileMap, members)
+		keywords := getMentionKeywordsInChannel(profileMap)
 
-		// get users that are explicitly mentioned
-		var mentioned map[string]bool
-		mentioned, hereNotification = getExplicitMentions(post.Message, keywords)
+		var potentialOtherMentions []string
+		mentionedUserIds, potentialOtherMentions, hereNotification, channelNotification, allNotification = getExplicitMentions(post.Message, keywords)
 
 		// get users that have comment thread mentions enabled
 		if len(post.RootId) > 0 {
 			if result := <-Srv.Store.Post().Get(post.RootId); result.Err != nil {
 				l4g.Error(utils.T("api.post.send_notifications_and_forget.comment_thread.error"), post.RootId, result.Err)
-				return
+				return nil
 			} else {
 				list := result.Data.(*model.PostList)
 
 				for _, threadPost := range list.Posts {
 					profile := profileMap[threadPost.UserId]
 					if profile.NotifyProps["comments"] == "any" || (profile.NotifyProps["comments"] == "root" && threadPost.Id == list.Order[0]) {
-						mentioned[threadPost.UserId] = true
+						mentionedUserIds[threadPost.UserId] = true
 					}
 				}
 			}
@@ -640,28 +631,18 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 
 		// prevent the user from mentioning themselves
 		if post.Props["from_webhook"] != "true" {
-			delete(mentioned, post.UserId)
+			delete(mentionedUserIds, post.UserId)
 		}
 
-		outOfChannelMentions := make(map[string]bool)
-		for id := range mentioned {
-			if _, inChannel := members[id]; inChannel {
-				mentionedUserIds[id] = true
-			} else {
-				outOfChannelMentions[id] = true
+		if len(potentialOtherMentions) > 0 {
+			if result := <-Srv.Store.User().GetProfilesByUsernames(potentialOtherMentions, team.Id); result.Err == nil {
+				outOfChannelMentions := result.Data.(map[string]*model.User)
+				go sendOutOfChannelMentions(c, post, outOfChannelMentions)
 			}
 		}
-
-		go sendOutOfChannelMentions(c, post, profileMap, outOfChannelMentions)
 
 		// find which users in the channel are set up to always receive mobile notifications
-		for id := range members {
-			profile := profileMap[id]
-			if profile == nil {
-				l4g.Warn(utils.T("api.post.notification.member_profile.warn"), id)
-				continue
-			}
-
+		for _, profile := range profileMap {
 			if profile.NotifyProps["push"] == model.USER_NOTIFY_ALL &&
 				(post.UserId != profile.Id || post.Props["from_webhook"] == "true") &&
 				!post.IsSystemMessage() {
@@ -671,20 +652,31 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 	}
 
 	mentionedUsersList := make([]string, 0, len(mentionedUserIds))
-
-	senderName := ""
-
-	var sender *model.User
-	if post.IsSystemMessage() {
-		senderName = c.T("system.message.name")
-	} else if profile, ok := profileMap[post.UserId]; ok {
-		senderName = profile.Username
-		sender = profile
-	}
-
 	for id := range mentionedUserIds {
 		mentionedUsersList = append(mentionedUsersList, id)
 		updateMentionChans = append(updateMentionChans, Srv.Store.Channel().IncrementMentionCount(post.ChannelId, id))
+	}
+
+	var sender *model.User
+	senderName := make(map[string]string)
+	for _, id := range mentionedUsersList {
+		senderName[id] = ""
+		if post.IsSystemMessage() {
+			senderName[id] = c.T("system.message.name")
+		} else if profile, ok := profileMap[post.UserId]; ok {
+			if value, ok := post.Props["override_username"]; ok && post.Props["from_webhook"] == "true" {
+				senderName[id] = value.(string)
+			} else {
+				//Get the Display name preference from the receiver
+				if result := <-Srv.Store.Preference().Get(id, model.PREFERENCE_CATEGORY_DISPLAY_SETTINGS, "name_format"); result.Err != nil {
+					// Show default sender's name if user doesn't set display settings.
+					senderName[id] = profile.Username
+				} else {
+					senderName[id] = profile.GetDisplayNameForPreference(result.Data.(model.Preference).Value)
+				}
+			}
+			sender = profile
+		}
 	}
 
 	if utils.Cfg.EmailSettings.SendEmailNotifications {
@@ -694,19 +686,65 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 			var status *model.Status
 			var err *model.AppError
 			if status, err = GetStatus(id); err != nil {
-				status = &model.Status{id, model.STATUS_OFFLINE, false, 0, ""}
+				status = &model.Status{
+					UserId:         id,
+					Status:         model.STATUS_OFFLINE,
+					Manual:         false,
+					LastActivityAt: 0,
+					ActiveChannel:  "",
+				}
 			}
 
 			if userAllowsEmails && status.Status != model.STATUS_ONLINE {
-				sendNotificationEmail(c, post, profileMap[id], channel, team, senderName, sender)
+				go sendNotificationEmail(c, post, profileMap[id], channel, team, senderName[id], sender)
 			}
 		}
+	}
+
+	// If the channel has more than 1K users then @here is disabled
+	if hereNotification && int64(len(profileMap)) > *utils.Cfg.TeamSettings.MaxNotificationsPerChannel {
+		hereNotification = false
+		SendEphemeralPost(
+			c.TeamId,
+			post.UserId,
+			&model.Post{
+				ChannelId: post.ChannelId,
+				Message:   c.T("api.post.disabled_here", map[string]interface{}{"Users": *utils.Cfg.TeamSettings.MaxNotificationsPerChannel}),
+				CreateAt:  post.CreateAt + 1,
+			},
+		)
+	}
+
+	// If the channel has more than 1K users then @channel is disabled
+	if channelNotification && int64(len(profileMap)) > *utils.Cfg.TeamSettings.MaxNotificationsPerChannel {
+		SendEphemeralPost(
+			c.TeamId,
+			post.UserId,
+			&model.Post{
+				ChannelId: post.ChannelId,
+				Message:   c.T("api.post.disabled_channel", map[string]interface{}{"Users": *utils.Cfg.TeamSettings.MaxNotificationsPerChannel}),
+				CreateAt:  post.CreateAt + 1,
+			},
+		)
+	}
+
+	// If the channel has more than 1K users then @all is disabled
+	if allNotification && int64(len(profileMap)) > *utils.Cfg.TeamSettings.MaxNotificationsPerChannel {
+		SendEphemeralPost(
+			c.TeamId,
+			post.UserId,
+			&model.Post{
+				ChannelId: post.ChannelId,
+				Message:   c.T("api.post.disabled_all", map[string]interface{}{"Users": *utils.Cfg.TeamSettings.MaxNotificationsPerChannel}),
+				CreateAt:  post.CreateAt + 1,
+			},
+		)
 	}
 
 	if hereNotification {
 		if result := <-Srv.Store.Status().GetOnline(); result.Err != nil {
 			l4g.Warn(utils.T("api.post.notification.here.warn"), result.Err)
-			return
+			return nil
 		} else {
 			statuses := result.Data.([]*model.Status)
 			for _, status := range statuses {
@@ -715,10 +753,9 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 				}
 
 				_, profileFound := profileMap[status.UserId]
-				_, isChannelMember := members[status.UserId]
 				_, alreadyMentioned := mentionedUserIds[status.UserId]
 
-				if status.Status == model.STATUS_ONLINE && profileFound && isChannelMember && !alreadyMentioned {
+				if status.Status == model.STATUS_ONLINE && profileFound && !alreadyMentioned {
 					mentionedUsersList = append(mentionedUsersList, status.UserId)
 					updateMentionChans = append(updateMentionChans, Srv.Store.Channel().IncrementMentionCount(post.ChannelId, status.UserId))
 				}
@@ -755,7 +792,7 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 			}
 
 			if DoesStatusAllowPushNotification(profileMap[id], status, post.ChannelId) {
-				sendPushNotification(post, profileMap[id], channel, senderName, true)
+				go sendPushNotification(post, profileMap[id], channel, senderName[id], true)
 			}
 		}
 
@@ -768,25 +805,31 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 				}
 
 				if DoesStatusAllowPushNotification(profileMap[id], status, post.ChannelId) {
-					sendPushNotification(post, profileMap[id], channel, senderName, false)
+					go sendPushNotification(post, profileMap[id], channel, senderName[id], false)
 				}
 			}
 		}
 	}
 
-	message := model.NewWebSocketEvent(c.TeamId, post.ChannelId, post.UserId, model.WEBSOCKET_EVENT_POSTED)
+	message := model.NewWebSocketEvent(model.WEBSOCKET_EVENT_POSTED, "", post.ChannelId, "", nil)
 	message.Add("post", post.ToJson())
 	message.Add("channel_type", channel.Type)
 	message.Add("channel_display_name", channel.DisplayName)
 	message.Add("sender_name", senderName)
 	message.Add("team_id", team.Id)
 
-	if len(post.Filenames) != 0 {
+	if len(post.FileIds) != 0 {
 		message.Add("otherFile", "true")
 
-		for _, filename := range post.Filenames {
-			ext := filepath.Ext(filename)
-			if model.IsFileExtImage(ext) {
+		var infos []*model.FileInfo
+		if result := <-fchan; result.Err != nil {
+			l4g.Warn(utils.T("api.post.send_notifications.files.error"), post.Id, result.Err)
+		} else {
+			infos = result.Data.([]*model.FileInfo)
+		}
+
+		for _, info := range infos {
+			if info.IsImage() {
 				message.Add("image", "true")
 				break
 			}
@@ -797,7 +840,8 @@ func sendNotifications(c *Context, post *model.Post, team *model.Team, channel *
 		message.Add("mentions", model.ArrayToJson(mentionedUsersList))
 	}
 
-	go Publish(message)
+	Publish(message)
+	return mentionedUsersList
 }
 
 func sendNotificationEmail(c *Context, post *model.Post, user *model.User, channel *model.Channel, team *model.Team, senderName string, sender *model.User) {
@@ -823,8 +867,11 @@ func sendNotificationEmail(c *Context, post *model.Post, user *model.User, chann
 				}
 			}
 
-			if !found {
+			if !found && len(teams) > 0 {
 				team = teams[0]
+			} else {
+				// in case the user hasn't joined any teams we send them to the select_team page
+				team = &model.Team{Name: "select_team", DisplayName: utils.Cfg.TeamSettings.SiteName}
 			}
 		}
 	}
@@ -869,14 +916,6 @@ func sendNotificationEmail(c *Context, post *model.Post, user *model.User, chann
 		subjectText = userLocale("api.post.send_notifications_and_forget.message_subject")
 
 		senderDisplayName := senderName
-		if sender != nil {
-			if result := <-Srv.Store.Preference().Get(user.Id, model.PREFERENCE_CATEGORY_DISPLAY_SETTINGS, "name_format"); result.Err != nil {
-				// Show default sender's name if user doesn't set display settings.
-				senderDisplayName = senderName
-			} else {
-				senderDisplayName = sender.GetDisplayNameForPreference(result.Data.(model.Preference).Value)
-			}
-		}
 
 		mailTemplate = "api.templates.post_subject_in_direct_message"
 		mailParameters = map[string]interface{}{"SubjectText": subjectText, "TeamDisplayName": team.DisplayName,
@@ -890,14 +929,17 @@ func sendNotificationEmail(c *Context, post *model.Post, user *model.User, chann
 			"ChannelName": channelName, "Month": month, "Day": day, "Year": year}
 	}
 
-	subjectPage := utils.NewHTMLTemplate("post_subject", user.Locale)
-	subjectPage.Props["Subject"] = userLocale(mailTemplate, mailParameters)
-	subjectPage.Props["SiteName"] = utils.Cfg.TeamSettings.SiteName
+	subject := fmt.Sprintf("[%v] %v", utils.Cfg.TeamSettings.SiteName, userLocale(mailTemplate, mailParameters))
 
 	bodyPage := utils.NewHTMLTemplate("post_body", user.Locale)
 	bodyPage.Props["SiteURL"] = c.GetSiteURL()
 	bodyPage.Props["PostMessage"] = getMessageForNotification(post, userLocale)
-	bodyPage.Props["TeamLink"] = teamURL + "/pl/" + post.Id
+	if team.Name != "select_team" {
+		bodyPage.Props["TeamLink"] = teamURL + "/pl/" + post.Id
+	} else {
+		bodyPage.Props["TeamLink"] = teamURL
+	}
+
 	bodyPage.Props["BodyText"] = bodyText
 	bodyPage.Props["Button"] = userLocale("api.templates.post_body.button")
 	bodyPage.Html["Info"] = template.HTML(userLocale("api.templates.post_body.info",
@@ -905,28 +947,39 @@ func sendNotificationEmail(c *Context, post *model.Post, user *model.User, chann
 			"Hour": fmt.Sprintf("%02d", tm.Hour()), "Minute": fmt.Sprintf("%02d", tm.Minute()),
 			"TimeZone": zone, "Month": month, "Day": day}))
 
-	if err := utils.SendMail(user.Email, html.UnescapeString(subjectPage.Render()), bodyPage.Render()); err != nil {
+	if err := utils.SendMail(user.Email, html.UnescapeString(subject), bodyPage.Render()); err != nil {
 		l4g.Error(utils.T("api.post.send_notifications_and_forget.send.error"), user.Email, err)
+	}
+
+	if einterfaces.GetMetricsInterface() != nil {
+		einterfaces.GetMetricsInterface().IncrementPostSentEmail()
 	}
 }
 
 func getMessageForNotification(post *model.Post, translateFunc i18n.TranslateFunc) string {
-	if len(strings.TrimSpace(post.Message)) != 0 || len(post.Filenames) == 0 {
+	if len(strings.TrimSpace(post.Message)) != 0 || len(post.FileIds) == 0 {
 		return post.Message
 	}
 
 	// extract the filenames from their paths and determine what type of files are attached
-	filenames := make([]string, len(post.Filenames))
+	var infos []*model.FileInfo
+	if result := <-Srv.Store.FileInfo().GetForPost(post.Id); result.Err != nil {
+		l4g.Warn(utils.T("api.post.get_message_for_notification.get_files.error"), post.Id, result.Err)
+	} else {
+		infos = result.Data.([]*model.FileInfo)
+	}
+
+	filenames := make([]string, len(infos))
 	onlyImages := true
-	for i, filename := range post.Filenames {
-		var err error
-		if filenames[i], err = url.QueryUnescape(filepath.Base(filename)); err != nil {
+	for i, info := range infos {
+		if escaped, err := url.QueryUnescape(filepath.Base(info.Name)); err != nil {
 			// this should never error since filepath was escaped using url.QueryEscape
-			filenames[i] = filepath.Base(filename)
+			filenames[i] = escaped
+		} else {
+			filenames[i] = info.Name
 		}
 
-		ext := filepath.Ext(filename)
-		onlyImages = onlyImages && model.IsFileExtImage(ext)
+		onlyImages = onlyImages && info.IsImage()
 	}
 
 	props := map[string]interface{}{"Filenames": strings.Join(filenames, ", ")}
@@ -939,9 +992,9 @@ func getMessageForNotification(post *model.Post, translateFunc i18n.TranslateFun
 }
 
 func sendPushNotification(post *model.Post, user *model.User, channel *model.Channel, senderName string, wasMentioned bool) {
-	session := getMobileAppSession(user.Id)
+	sessions := getMobileAppSessions(user.Id)
 
-	if session == nil {
+	if sessions == nil {
 		return
 	}
 
@@ -963,10 +1016,9 @@ func sendPushNotification(post *model.Post, user *model.User, channel *model.Cha
 		msg.Badge = int(badge.Data.(int64))
 	}
 	msg.Type = model.PUSH_TYPE_MESSAGE
+	msg.TeamId = channel.TeamId
 	msg.ChannelId = channel.Id
 	msg.ChannelName = channel.Name
-
-	msg.SetDeviceIdAndPlatform(session.DeviceId)
 
 	if *utils.Cfg.EmailSettings.PushNotificationContents == model.FULL_NOTIFICATION {
 		if channel.Type == model.CHANNEL_DIRECT {
@@ -987,12 +1039,20 @@ func sendPushNotification(post *model.Post, user *model.User, channel *model.Cha
 	}
 
 	l4g.Debug(utils.T("api.post.send_notifications_and_forget.push_notification.debug"), msg.DeviceId, msg.Message)
-	sendToPushProxy(msg)
+
+	for _, session := range sessions {
+		tmpMessage := *model.PushNotificationFromJson(strings.NewReader(msg.ToJson()))
+		tmpMessage.SetDeviceIdAndPlatform(session.DeviceId)
+		sendToPushProxy(tmpMessage)
+		if einterfaces.GetMetricsInterface() != nil {
+			einterfaces.GetMetricsInterface().IncrementPostSentPush()
+		}
+	}
 }
 
 func clearPushNotification(userId string, channelId string) {
-	session := getMobileAppSession(userId)
-	if session == nil {
+	sessions := getMobileAppSessions(userId)
+	if sessions == nil {
 		return
 	}
 
@@ -1007,10 +1067,12 @@ func clearPushNotification(userId string, channelId string) {
 		msg.Badge = int(badge.Data.(int64))
 	}
 
-	msg.SetDeviceIdAndPlatform(session.DeviceId)
-
 	l4g.Debug(utils.T("api.post.send_notifications_and_forget.clear_push_notification.debug"), msg.DeviceId, msg.ChannelId)
-	sendToPushProxy(msg)
+	for _, session := range sessions {
+		tmpMessage := *model.PushNotificationFromJson(strings.NewReader(msg.ToJson()))
+		tmpMessage.SetDeviceIdAndPlatform(session.DeviceId)
+		sendToPushProxy(tmpMessage)
+	}
 }
 
 func sendToPushProxy(msg model.PushNotification) {
@@ -1030,32 +1092,23 @@ func sendToPushProxy(msg model.PushNotification) {
 	}
 }
 
-func getMobileAppSession(userId string) *model.Session {
-	var sessions []*model.Session
-	if result := <-Srv.Store.Session().GetSessions(userId); result.Err != nil {
+func getMobileAppSessions(userId string) []*model.Session {
+	if result := <-Srv.Store.Session().GetSessionsWithActiveDeviceIds(userId); result.Err != nil {
 		l4g.Error(utils.T("api.post.send_notifications_and_forget.sessions.error"), userId, result.Err)
 		return nil
 	} else {
-		sessions = result.Data.([]*model.Session)
+		return result.Data.([]*model.Session)
 	}
-
-	for _, session := range sessions {
-		if session.IsMobileApp() {
-			return session
-		}
-	}
-
-	return nil
 }
 
-func sendOutOfChannelMentions(c *Context, post *model.Post, profiles map[string]*model.User, outOfChannelMentions map[string]bool) {
-	if len(outOfChannelMentions) == 0 {
+func sendOutOfChannelMentions(c *Context, post *model.Post, profiles map[string]*model.User) {
+	if len(profiles) == 0 {
 		return
 	}
 
 	var usernames []string
-	for id := range outOfChannelMentions {
-		usernames = append(usernames, profiles[id].Username)
+	for _, user := range profiles {
+		usernames = append(usernames, user.Username)
 	}
 	sort.Strings(usernames)
 
@@ -1095,11 +1148,8 @@ func SendEphemeralPost(teamId, userId string, post *model.Post) {
 	if post.Props == nil {
 		post.Props = model.StringInterface{}
 	}
-	if post.Filenames == nil {
-		post.Filenames = []string{}
-	}
 
-	message := model.NewWebSocketEvent(teamId, post.ChannelId, userId, model.WEBSOCKET_EVENT_EPHEMERAL_MESSAGE)
+	message := model.NewWebSocketEvent(model.WEBSOCKET_EVENT_EPHEMERAL_MESSAGE, "", post.ChannelId, userId, nil)
 	message.Add("post", post.ToJson())
 
 	go Publish(message)
@@ -1152,15 +1202,19 @@ func updatePost(c *Context, w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	hashtags, _ := model.ParseHashtags(post.Message)
+	newPost := &model.Post{}
+	*newPost = *oldPost
 
-	if result := <-Srv.Store.Post().Update(oldPost, post.Message, hashtags); result.Err != nil {
+	newPost.Message = post.Message
+	newPost.Hashtags, _ = model.ParseHashtags(post.Message)
+
+	if result := <-Srv.Store.Post().Update(newPost, oldPost); result.Err != nil {
 		c.Err = result.Err
 		return
 	} else {
 		rpost := result.Data.(*model.Post)
 
-		message := model.NewWebSocketEvent(c.TeamId, rpost.ChannelId, c.Session.UserId, model.WEBSOCKET_EVENT_POST_EDITED)
+		message := model.NewWebSocketEvent(model.WEBSOCKET_EVENT_POST_EDITED, "", rpost.ChannelId, "", nil)
 		message.Add("post", rpost.ToJson())
 
 		go Publish(message)
@@ -1370,16 +1424,15 @@ func getPermalinkTmp(c *Context, w http.ResponseWriter, r *http.Request) {
 		}
 		post := list.Posts[list.Order[0]]
 
-		if !HasPermissionToChannelContext(c, post.ChannelId, model.PERMISSION_READ_CHANNEL) {
-			// If we don't have permissions attempt to join the channel to fix the problem
-			if err, _ := JoinChannelById(c, c.Session.UserId, post.ChannelId); err != nil {
-				// On error just return with permissions error
-				c.Err = err
-				return
-			} else {
-				// If we sucessfully joined the channel then clear the permissions error and continue
-				c.Err = nil
-			}
+		// Because we confuse permissions and membership in Mattermost's model, we have to just
+		// try to join the channel without checking if we already have permission to it. This is
+		// because system admins have permissions to every channel but are not nessisary a member
+		// of every channel. If we checked here then system admins would skip joining the channel and
+		// error when they tried to view it.
+		if err, _ := JoinChannelById(c, c.Session.UserId, post.ChannelId); err != nil {
+			// On error just return with permissions error
+			c.Err = err
+			return
 		}
 
 		if HandleEtag(list.Etag(), w, r) {
@@ -1441,11 +1494,11 @@ func deletePost(c *Context, w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		message := model.NewWebSocketEvent(c.TeamId, post.ChannelId, c.Session.UserId, model.WEBSOCKET_EVENT_POST_DELETED)
+		message := model.NewWebSocketEvent(model.WEBSOCKET_EVENT_POST_DELETED, "", post.ChannelId, "", nil)
 		message.Add("post", post.ToJson())
 
 		go Publish(message)
-		go DeletePostFiles(c.TeamId, post)
+		go DeletePostFiles(post)
 		go DeleteFlaggedPost(c.Session.UserId, post)
 
 		result := make(map[string]string)
@@ -1461,17 +1514,13 @@ func DeleteFlaggedPost(userId string, post *model.Post) {
 	}
 }
 
-func DeletePostFiles(teamId string, post *model.Post) {
-	if len(post.Filenames) == 0 {
+func DeletePostFiles(post *model.Post) {
+	if len(post.FileIds) != 0 {
 		return
 	}
 
-	prefix := "teams/" + teamId + "/channels/" + post.ChannelId + "/users/" + post.UserId + "/"
-	for _, filename := range post.Filenames {
-		splitUrl := strings.Split(filename, "/")
-		oldPath := prefix + splitUrl[len(splitUrl)-2] + "/" + splitUrl[len(splitUrl)-1]
-		newPath := prefix + splitUrl[len(splitUrl)-2] + "/deleted_" + splitUrl[len(splitUrl)-1]
-		MoveFile(oldPath, newPath)
+	if result := <-Srv.Store.FileInfo().DeleteForPost(post.Id); result.Err != nil {
+		l4g.Warn(utils.T("api.post.delete_post_files.app_error.warn"), post.Id, result.Err)
 	}
 }
 
@@ -1578,4 +1627,60 @@ func searchPosts(c *Context, w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 	w.Write([]byte(posts.ToJson()))
+}
+
+func getFileInfosForPost(c *Context, w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+
+	channelId := params["channel_id"]
+	if len(channelId) != 26 {
+		c.SetInvalidParam("getFileInfosForPost", "channelId")
+		return
+	}
+
+	postId := params["post_id"]
+	if len(postId) != 26 {
+		c.SetInvalidParam("getFileInfosForPost", "postId")
+		return
+	}
+
+	pchan := Srv.Store.Post().Get(postId)
+	fchan := Srv.Store.FileInfo().GetForPost(postId)
+
+	if !HasPermissionToChannelContext(c, channelId, model.PERMISSION_READ_CHANNEL) {
+		return
+	}
+
+	var infos []*model.FileInfo
+	if result := <-fchan; result.Err != nil {
+		c.Err = result.Err
+		return
+	} else {
+		infos = result.Data.([]*model.FileInfo)
+	}
+
+	if len(infos) == 0 {
+		// No FileInfos were returned so check if they need to be created for this post
+		var post *model.Post
+		if result := <-pchan; result.Err != nil {
+			c.Err = result.Err
+			return
+		} else {
+			post = result.Data.(*model.PostList).Posts[postId]
+		}
+
+		if len(post.Filenames) > 0 {
+			// The post has Filenames that need to be replaced with FileInfos
+			infos = migrateFilenamesToFileInfos(post)
+		}
+	}
+
+	etag := model.GetEtagForFileInfos(infos)
+
+	if HandleEtag(etag, w, r) {
+		return
+	} else {
+		w.Header().Set(model.HEADER_ETAG_SERVER, etag)
+		w.Write([]byte(model.FileInfosToJson(infos)))
+	}
 }

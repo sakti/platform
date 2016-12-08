@@ -2,9 +2,12 @@
 // See License.txt for license information.
 
 import Client from './client.jsx';
-import TeamStore from '../stores/team_store.jsx';
-import BrowserStore from '../stores/browser_store.jsx';
+
+import TeamStore from 'stores/team_store.jsx';
+import BrowserStore from 'stores/browser_store.jsx';
+
 import * as GlobalActions from 'actions/global_actions.jsx';
+import {reconnect} from 'actions/websocket_actions.jsx';
 
 import request from 'superagent';
 
@@ -14,28 +17,40 @@ class WebClientClass extends Client {
     constructor() {
         super();
         this.enableLogErrorsToConsole(true);
-        TeamStore.addChangeListener(this.onTeamStoreChanged);
+        this.hasInternetConnection = true;
+        TeamStore.addChangeListener(this.onTeamStoreChanged.bind(this));
     }
 
-    onTeamStoreChanged = () => {
+    onTeamStoreChanged() {
         this.setTeamId(TeamStore.getCurrentId());
     }
 
-    track = (category, action, label, property, value) => {
+    track(category, action, label, property, value) {
         if (global.window && global.window.analytics) {
             global.window.analytics.track(action, {category, label, property, value});
         }
     }
 
-    trackPage = () => {
+    trackPage() {
         if (global.window && global.window.analytics) {
             global.window.analytics.page();
         }
     }
 
-    handleError = (err, res) => { // eslint-disable-line no-unused-vars
+    handleError(err, res) {
         if (err.status === HTTP_UNAUTHORIZED && res.req.url !== '/api/v3/users/login') {
             GlobalActions.emitUserLoggedOutEvent('/login');
+        }
+
+        if (err.status == null) {
+            this.hasInternetConnection = false;
+        }
+    }
+
+    handleSuccess = (res) => { // eslint-disable-line no-unused-vars
+        if (res && !this.hasInternetConnection) {
+            reconnect();
+            this.hasInternetConnection = true;
         }
     }
 
@@ -92,6 +107,11 @@ class WebClientClass extends Client {
             if (err) {
                 return error(err);
             }
+
+            if (!res.body) {
+                console.error('Missing response body for getYoutubeVideoInfo'); // eslint-disable-line no-console
+            }
+
             return success(res.body);
         });
     }

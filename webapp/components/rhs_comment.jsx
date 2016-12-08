@@ -2,10 +2,12 @@
 // See License.txt for license information.
 
 import UserProfile from './user_profile.jsx';
-import FileAttachmentList from './file_attachment_list.jsx';
+import FileAttachmentListContainer from './file_attachment_list_container.jsx';
 import PendingPostOptions from 'components/post_view/components/pending_post_options.jsx';
 import PostMessageContainer from 'components/post_view/components/post_message_container.jsx';
 import ProfilePicture from 'components/profile_picture.jsx';
+import ReactionListContainer from 'components/post_view/components/reaction_list_container.jsx';
+import RhsDropdown from 'components/rhs_dropdown.jsx';
 
 import TeamStore from 'stores/team_store.jsx';
 import UserStore from 'stores/user_store.jsx';
@@ -19,7 +21,7 @@ import * as PostUtils from 'utils/post_utils.jsx';
 import Constants from 'utils/constants.jsx';
 import {Tooltip, OverlayTrigger} from 'react-bootstrap';
 
-import {FormattedMessage, FormattedDate} from 'react-intl';
+import {FormattedMessage} from 'react-intl';
 
 import loadingGif from 'images/load.gif';
 
@@ -100,13 +102,12 @@ export default class RhsComment extends React.Component {
     createDropdown() {
         const post = this.props.post;
 
-        if (post.state === Constants.POST_FAILED || post.state === Constants.POST_LOADING || post.state === Constants.POST_DELETED) {
+        if (post.state === Constants.POST_FAILED || post.state === Constants.POST_LOADING) {
             return '';
         }
 
         const isOwner = this.props.currentUser.id === post.user_id;
         var isAdmin = TeamStore.isTeamAdminForCurrentTeam() || UserStore.isSystemAdminForCurrentUser();
-        const isSystemMessage = post.type && post.type.startsWith(Constants.SYSTEM_MESSAGE_PREFIX);
 
         var dropdownContents = [];
 
@@ -165,7 +166,7 @@ export default class RhsComment extends React.Component {
             </li>
         );
 
-        if (isOwner && !isSystemMessage) {
+        if (isOwner) {
             dropdownContents.push(
                 <li
                     role='presentation'
@@ -219,22 +220,8 @@ export default class RhsComment extends React.Component {
         }
 
         return (
-            <div className='dropdown'>
-                <a
-                    href='#'
-                    className='post__dropdown dropdown-toggle'
-                    type='button'
-                    data-toggle='dropdown'
-                    aria-expanded='false'
-                />
-                <ul
-                    className='dropdown-menu'
-                    role='menu'
-                >
-                    {dropdownContents}
-                </ul>
-            </div>
-            );
+            <RhsDropdown dropdownContents={dropdownContents}/>
+        );
     }
 
     render() {
@@ -277,31 +264,41 @@ export default class RhsComment extends React.Component {
             );
         }
 
+        let status = this.props.status;
+        if (post.props && post.props.from_webhook === 'true') {
+            status = null;
+        }
+
         let profilePic = (
             <ProfilePicture
                 src={PostUtils.getProfilePicSrcForPost(post, timestamp)}
-                status={this.props.status}
+                status={status}
                 width='36'
                 height='36'
+                user={this.props.user}
             />
         );
 
         let compactClass = '';
-        let profilePicContainer = (<div className='post__img'>{profilePic}</div>);
         if (this.props.compactDisplay) {
             compactClass = 'post--compact';
-            profilePicContainer = '';
+
+            profilePic = (
+                <ProfilePicture
+                    src=''
+                    status={status}
+                    user={this.props.user}
+                />
+            );
         }
 
-        var dropdown = this.createDropdown();
+        const profilePicContainer = (<div className='post__img'>{profilePic}</div>);
 
-        var fileAttachment;
-        if (post.filenames && post.filenames.length > 0) {
+        let fileAttachment = null;
+        if (post.file_ids && post.file_ids.length > 0) {
             fileAttachment = (
-                <FileAttachmentList
-                    filenames={post.filenames}
-                    channelId={post.channel_id}
-                    userId={post.user_id}
+                <FileAttachmentListContainer
+                    post={post}
                     compactDisplay={this.props.compactDisplay}
                 />
             );
@@ -372,13 +369,22 @@ export default class RhsComment extends React.Component {
                     {this.createRemovePostButton()}
                 </li>
             );
-        } else {
+        } else if (!PostUtils.isSystemMessage(post)) {
             options = (
                 <li className='col col__reply'>
-                    {dropdown}
+                    {this.createDropdown()}
                 </li>
             );
         }
+
+        const timeOptions = {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: !this.props.useMilitaryTime
+        };
 
         return (
             <div className={'post post--thread ' + currentUserCss + ' ' + compactClass}>
@@ -392,15 +398,7 @@ export default class RhsComment extends React.Component {
                             {botIndicator}
                             <li className='col'>
                                 <time className='post__time'>
-                                    <FormattedDate
-                                        value={post.create_at}
-                                        day='numeric'
-                                        month='short'
-                                        year='numeric'
-                                        hour12={!this.props.useMilitaryTime}
-                                        hour='2-digit'
-                                        minute='2-digit'
-                                    />
+                                    {Utils.getDateForUnixTicks(post.create_at).toLocaleString('en', timeOptions)}
                                 </time>
                                 {flagTrigger}
                             </li>
@@ -412,6 +410,10 @@ export default class RhsComment extends React.Component {
                                 {message}
                             </div>
                             {fileAttachment}
+                            <ReactionListContainer
+                                post={post}
+                                currentUserId={this.props.currentUser.id}
+                            />
                         </div>
                     </div>
                 </div>

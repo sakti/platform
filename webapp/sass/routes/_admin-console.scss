@@ -56,12 +56,16 @@
         &.btn-spacing--right {
             margin-right: 10px;
         }
+
+        .fa {
+            margin-right: 5px;
+        }
     }
 
     .log__panel {
         background-color: white;
         border: 1px solid #ddd;
-        height: 800px;
+        height: calc(100vh - 200px);
         margin-top: 10px;
         overflow: scroll;
         padding: 5px;
@@ -172,10 +176,6 @@
             margin-bottom: 0.5em;
         }
 
-        .banner__content {
-            width: 80%;
-        }
-
         &.warning {
             background: #e60000;
         }
@@ -236,6 +236,19 @@
             .fa-plus {
                 display: none;
             }
+        }
+    }
+
+    .more-modal__list {
+        .filtered-user-list {
+             .filter-controls {
+                padding-bottom: 1em;
+             }
+        }
+
+        .filter-row {
+            margin: 10px 0;
+            overflow: hidden;
         }
     }
 
@@ -451,4 +464,3 @@
     overflow: hidden;
     text-overflow: ellipsis;
 }
-

@@ -19,7 +19,7 @@ import React from 'react';
 import {FormattedMessage, FormattedHTMLMessage} from 'react-intl';
 
 function getStateFromStores() {
-    const results = SearchStore.getSearchResults();
+    const results = JSON.parse(JSON.stringify(SearchStore.getSearchResults()));
 
     const channels = new Map();
 
@@ -271,7 +271,7 @@ export default class SearchResults extends React.Component {
 SearchResults.propTypes = {
     isMentionSearch: React.PropTypes.bool,
     useMilitaryTime: React.PropTypes.bool.isRequired,
-    toggleSize: React.PropTypes.function,
-    shrink: React.PropTypes.function,
+    toggleSize: React.PropTypes.func,
+    shrink: React.PropTypes.func,
     isFlaggedPosts: React.PropTypes.bool
 };

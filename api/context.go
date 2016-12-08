@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	l4g "github.com/alecthomas/log4go"
 	"github.com/gorilla/mux"
@@ -57,7 +58,7 @@ func AppHandlerIndependent(h func(*Context, http.ResponseWriter, *http.Request))
 }
 
 func ApiUserRequired(h func(*Context, http.ResponseWriter, *http.Request)) http.Handler {
-	return &handler{h, true, false, true, true, false, false}
+	return &handler{h, true, false, true, false, false, false}
 }
 
 func ApiUserRequiredActivity(h func(*Context, http.ResponseWriter, *http.Request), isUserActivity bool) http.Handler {
@@ -85,7 +86,7 @@ func ApiAppHandlerTrustRequester(h func(*Context, http.ResponseWriter, *http.Req
 }
 
 func ApiUserRequiredTrustRequester(h func(*Context, http.ResponseWriter, *http.Request)) http.Handler {
-	return &handler{h, true, false, true, true, false, true}
+	return &handler{h, true, false, true, false, false, true}
 }
 
 func ApiAppHandlerTrustRequesterIndependent(h func(*Context, http.ResponseWriter, *http.Request)) http.Handler {
@@ -103,6 +104,7 @@ type handler struct {
 }
 
 func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	now := time.Now()
 	l4g.Debug("%v", r.URL.Path)
 
 	c := &Context{}
@@ -220,7 +222,7 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		c.LogError(c.Err)
 		c.Err.Where = r.URL.Path
 
-		// Block out detailed error whenn not in developer mode
+		// Block out detailed error when not in developer mode
 		if !*utils.Cfg.ServiceSettings.EnableDeveloper {
 			c.Err.DetailedError = ""
 		}
@@ -228,12 +230,26 @@ func (h handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if h.isApi {
 			w.WriteHeader(c.Err.StatusCode)
 			w.Write([]byte(c.Err.ToJson()))
+
+			if einterfaces.GetMetricsInterface() != nil {
+				einterfaces.GetMetricsInterface().IncrementHttpError()
+			}
 		} else {
 			if c.Err.StatusCode == http.StatusUnauthorized {
 				http.Redirect(w, r, c.GetTeamURL()+"/?redirect="+url.QueryEscape(r.URL.Path), http.StatusTemporaryRedirect)
 			} else {
 				RenderWebError(c.Err, w, r)
 			}
+		}
+
+	}
+
+	if h.isApi && einterfaces.GetMetricsInterface() != nil {
+		einterfaces.GetMetricsInterface().IncrementHttpRequest()
+
+		if r.URL.Path != model.API_URL_SUFFIX+"/users/websocket" {
+			elapsed := float64(time.Since(now)) / float64(time.Second)
+			einterfaces.GetMetricsInterface().ObserveHttpRequestDuration(elapsed)
 		}
 	}
 }
@@ -364,7 +380,7 @@ func (c *Context) SetTeamURLFromSession() {
 }
 
 func (c *Context) SetSiteURL(url string) {
-	c.siteURL = url
+	c.siteURL = strings.TrimRight(url, "/")
 }
 
 func (c *Context) GetTeamURLFromTeam(team *model.Team) string {
@@ -474,6 +490,14 @@ func GetSession(token string) *model.Session {
 
 func RemoveAllSessionsForUserId(userId string) {
 
+	RemoveAllSessionsForUserIdSkipClusterSend(userId)
+
+	if einterfaces.GetClusterInterface() != nil {
+		einterfaces.GetClusterInterface().RemoveAllSessionsForUserId(userId)
+	}
+}
+
+func RemoveAllSessionsForUserIdSkipClusterSend(userId string) {
 	keys := sessionCache.Keys()
 
 	for _, key := range keys {
@@ -485,9 +509,6 @@ func RemoveAllSessionsForUserId(userId string) {
 		}
 	}
 
-	if einterfaces.GetClusterInterface() != nil {
-		einterfaces.GetClusterInterface().RemoveAllSessionsForUserId(userId)
-	}
 }
 
 func AddSessionToCache(session *model.Session) {

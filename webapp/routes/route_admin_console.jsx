@@ -18,6 +18,7 @@ import OAuthSettings from 'components/admin_console/oauth_settings.jsx';
 import LdapSettings from 'components/admin_console/ldap_settings.jsx';
 import SamlSettings from 'components/admin_console/saml_settings.jsx';
 import ClusterSettings from 'components/admin_console/cluster_settings.jsx';
+import MetricsSettings from 'components/admin_console/metrics_settings.jsx';
 import SignupSettings from 'components/admin_console/signup_settings.jsx';
 import PasswordSettings from 'components/admin_console/password_settings.jsx';
 import PublicLinkSettings from 'components/admin_console/public_link_settings.jsx';
@@ -27,6 +28,7 @@ import EmailSettings from 'components/admin_console/email_settings.jsx';
 import PushSettings from 'components/admin_console/push_settings.jsx';
 import CustomIntegrationsSettings from 'components/admin_console/custom_integrations_settings.jsx';
 import ExternalServiceSettings from 'components/admin_console/external_service_settings.jsx';
+import WebrtcSettings from 'components/admin_console/webrtc_settings.jsx';
 import DatabaseSettings from 'components/admin_console/database_settings.jsx';
 import StorageSettings from 'components/admin_console/storage_settings.jsx';
 import ImageSettings from 'components/admin_console/image_settings.jsx';
@@ -147,6 +149,10 @@ export default (
                 path='external'
                 component={ExternalServiceSettings}
             />
+            <Route
+                path='webrtc'
+                component={WebrtcSettings}
+            />
         </Route>
         <Route path='files'>
             <IndexRedirect to='storage'/>
@@ -195,6 +201,10 @@ export default (
             <Route
                 path='cluster'
                 component={ClusterSettings}
+            />
+            <Route
+                path='metrics'
+                component={MetricsSettings}
             />
         </Route>
         <Route path='team'>

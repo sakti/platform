@@ -35,6 +35,8 @@ export default class AdminSidebar extends React.Component {
         this.teamSelectedModal = this.teamSelectedModal.bind(this);
         this.teamSelectedModalDismissed = this.teamSelectedModalDismissed.bind(this);
 
+        this.updateTitle = this.updateTitle.bind(this);
+
         this.renderAddTeamButton = this.renderAddTeamButton.bind(this);
         this.renderTeams = this.renderTeams.bind(this);
 
@@ -48,6 +50,8 @@ export default class AdminSidebar extends React.Component {
     componentDidMount() {
         AdminStore.addAllTeamsChangeListener(this.handleAllTeamsChange);
         AsyncClient.getAllTeams();
+
+        this.updateTitle();
     }
 
     componentDidUpdate() {
@@ -101,6 +105,15 @@ export default class AdminSidebar extends React.Component {
         this.setState({showSelectModal: false});
     }
 
+    updateTitle() {
+        let currentSiteName = '';
+        if (global.window.mm_config.SiteName != null) {
+            currentSiteName = global.window.mm_config.SiteName;
+        }
+
+        document.title = Utils.localizeMessage('sidebar_right_menu.console', 'System Console') + ' - ' + currentSiteName;
+    }
+
     renderAddTeamButton() {
         const addTeamTooltip = (
             <Tooltip id='add-team-tooltip'>
@@ -124,7 +137,7 @@ export default class AdminSidebar extends React.Component {
                     >
                         <i
                             className='fa fa-plus'
-                        ></i>
+                        />
                     </a>
                 </OverlayTrigger>
             </span>
@@ -179,6 +192,7 @@ export default class AdminSidebar extends React.Component {
         let ldapSettings = null;
         let samlSettings = null;
         let clusterSettings = null;
+        let metricsSettings = null;
         let complianceSettings = null;
 
         let license = null;
@@ -222,6 +236,20 @@ export default class AdminSidebar extends React.Component {
                             <FormattedMessage
                                 id='admin.sidebar.cluster'
                                 defaultMessage='High Availability (Beta)'
+                            />
+                        }
+                    />
+                );
+            }
+
+            if (global.window.mm_license.Metrics === 'true') {
+                metricsSettings = (
+                    <AdminSidebarSection
+                        name='metrics'
+                        title={
+                            <FormattedMessage
+                                id='admin.sidebar.metrics'
+                                defaultMessage='Performance Monitoring (Beta)'
                             />
                         }
                     />
@@ -341,6 +369,18 @@ export default class AdminSidebar extends React.Component {
                 </AdminSidebarCategory>
             );
         }
+
+        const webrtcSettings = (
+            <AdminSidebarSection
+                name='webrtc'
+                title={
+                    <FormattedMessage
+                        id='admin.sidebar.webrtc'
+                        defaultMessage='WebRTC (Beta)'
+                    />
+                }
+            />
+        );
 
         return (
             <div className='admin-sidebar'>
@@ -572,6 +612,7 @@ export default class AdminSidebar extends React.Component {
                                         />
                                     }
                                 />
+                                {webrtcSettings}
                                 <AdminSidebarSection
                                     name='external'
                                     title={
@@ -690,6 +731,7 @@ export default class AdminSidebar extends React.Component {
                                     }
                                 />
                                 {clusterSettings}
+                                {metricsSettings}
                             </AdminSidebarSection>
                         </AdminSidebarCategory>
                         {this.renderTeams()}

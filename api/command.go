@@ -45,6 +45,7 @@ func InitCommand() {
 	BaseRoutes.Commands.Handle("/list", ApiUserRequired(listCommands)).Methods("GET")
 
 	BaseRoutes.Commands.Handle("/create", ApiUserRequired(createCommand)).Methods("POST")
+	BaseRoutes.Commands.Handle("/update", ApiUserRequired(updateCommand)).Methods("POST")
 	BaseRoutes.Commands.Handle("/list_team_commands", ApiUserRequired(listTeamCommands)).Methods("GET")
 	BaseRoutes.Commands.Handle("/regen_token", ApiUserRequired(regenCommandToken)).Methods("POST")
 	BaseRoutes.Commands.Handle("/delete", ApiUserRequired(deleteCommand)).Methods("POST")
@@ -230,6 +231,8 @@ func handleResponse(c *Context, w http.ResponseWriter, response *model.CommandRe
 	if utils.Cfg.ServiceSettings.EnablePostUsernameOverride {
 		if len(cmd.Username) != 0 {
 			post.AddProp("override_username", cmd.Username)
+		} else if len(response.Username) != 0 {
+			post.AddProp("override_username", response.Username)
 		} else {
 			post.AddProp("override_username", model.DEFAULT_WEBHOOK_USERNAME)
 		}
@@ -238,6 +241,8 @@ func handleResponse(c *Context, w http.ResponseWriter, response *model.CommandRe
 	if utils.Cfg.ServiceSettings.EnablePostIconOverride {
 		if len(cmd.IconURL) != 0 {
 			post.AddProp("override_icon_url", cmd.IconURL)
+		} else if len(response.IconURL) != 0 {
+			post.AddProp("override_icon_url", response.IconURL)
 		} else {
 			post.AddProp("override_icon_url", "")
 		}
@@ -316,6 +321,65 @@ func createCommand(c *Context, w http.ResponseWriter, r *http.Request) {
 		c.LogAudit("success")
 		rcmd := result.Data.(*model.Command)
 		w.Write([]byte(rcmd.ToJson()))
+	}
+}
+
+func updateCommand(c *Context, w http.ResponseWriter, r *http.Request) {
+	if !*utils.Cfg.ServiceSettings.EnableCommands {
+		c.Err = model.NewLocAppError("updateCommand", "api.command.disabled.app_error", nil, "")
+		c.Err.StatusCode = http.StatusNotImplemented
+		return
+	}
+
+	if !HasPermissionToCurrentTeamContext(c, model.PERMISSION_MANAGE_SLASH_COMMANDS) {
+		c.Err = model.NewLocAppError("updateCommand", "api.command.admin_only.app_error", nil, "")
+		c.Err.StatusCode = http.StatusForbidden
+		return
+	}
+
+	c.LogAudit("attempt")
+
+	cmd := model.CommandFromJson(r.Body)
+
+	if cmd == nil {
+		c.SetInvalidParam("updateCommand", "command")
+		return
+	}
+
+	cmd.Trigger = strings.ToLower(cmd.Trigger)
+
+	var oldCmd *model.Command
+	if result := <-Srv.Store.Command().Get(cmd.Id); result.Err != nil {
+		c.Err = result.Err
+		return
+	} else {
+		oldCmd = result.Data.(*model.Command)
+
+		if c.Session.UserId != oldCmd.CreatorId && !HasPermissionToCurrentTeamContext(c, model.PERMISSION_MANAGE_OTHERS_SLASH_COMMANDS) {
+			c.LogAudit("fail - inappropriate permissions")
+			c.Err = model.NewLocAppError("updateCommand", "api.command.update.app_error", nil, "user_id="+c.Session.UserId)
+			return
+		}
+
+		if c.TeamId != oldCmd.TeamId {
+			c.Err = model.NewLocAppError("updateCommand", "api.command.team_mismatch.app_error", nil, "user_id="+c.Session.UserId)
+			return
+		}
+
+		cmd.Id = oldCmd.Id
+		cmd.Token = oldCmd.Token
+		cmd.CreateAt = oldCmd.CreateAt
+		cmd.UpdateAt = model.GetMillis()
+		cmd.DeleteAt = oldCmd.DeleteAt
+		cmd.CreatorId = oldCmd.CreatorId
+		cmd.TeamId = oldCmd.TeamId
+	}
+
+	if result := <-Srv.Store.Command().Update(cmd); result.Err != nil {
+		c.Err = result.Err
+		return
+	} else {
+		w.Write([]byte(result.Data.(*model.Command).ToJson()))
 	}
 }
 
@@ -415,7 +479,7 @@ func deleteCommand(c *Context, w http.ResponseWriter, r *http.Request) {
 		c.Err = result.Err
 		return
 	} else {
-		if c.TeamId != result.Data.(*model.Command).TeamId || (c.Session.UserId != result.Data.(*model.Command).CreatorId && HasPermissionToCurrentTeamContext(c, model.PERMISSION_MANAGE_OTHERS_SLASH_COMMANDS)) {
+		if c.TeamId != result.Data.(*model.Command).TeamId || (c.Session.UserId != result.Data.(*model.Command).CreatorId && !HasPermissionToCurrentTeamContext(c, model.PERMISSION_MANAGE_OTHERS_SLASH_COMMANDS)) {
 			c.LogAudit("fail - inappropriate permissions")
 			c.Err = model.NewLocAppError("deleteCommand", "api.command.delete.app_error", nil, "user_id="+c.Session.UserId)
 			return

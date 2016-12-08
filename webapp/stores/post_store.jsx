@@ -118,7 +118,15 @@ class PostStoreClass extends EventEmitter {
 
     getEarliestPost(id) {
         if (this.postsInfo.hasOwnProperty(id)) {
-            return this.postsInfo[id].postList.posts[this.postsInfo[id].postList.order[this.postsInfo[id].postList.order.length - 1]];
+            const postList = this.postsInfo[id].postList;
+
+            for (let i = postList.order.length - 1; i >= 0; i--) {
+                const postId = postList.order[i];
+
+                if (postList.posts[postId].state !== Constants.POST_DELETED) {
+                    return postList.posts[postId];
+                }
+            }
         }
 
         return null;
@@ -126,7 +134,13 @@ class PostStoreClass extends EventEmitter {
 
     getLatestPost(id) {
         if (this.postsInfo.hasOwnProperty(id)) {
-            return this.postsInfo[id].postList.posts[this.postsInfo[id].postList.order[0]];
+            const postList = this.postsInfo[id].postList;
+
+            for (const postId of postList.order) {
+                if (postList.posts[postId].state !== Constants.POST_DELETED) {
+                    return postList.posts[postId];
+                }
+            }
         }
 
         return null;
@@ -178,15 +192,15 @@ class PostStoreClass extends EventEmitter {
     }
 
     // Returns true if posts need to be fetched
-    requestVisibilityIncrease(id, ammount) {
+    requestVisibilityIncrease(id, amount) {
         const endVisible = this.postsInfo[id].endVisible;
         const postList = this.postsInfo[id].postList;
         if (this.getVisibilityAtTop(id)) {
             return false;
         }
-        this.postsInfo[id].endVisible += ammount;
+        this.postsInfo[id].endVisible += amount;
         this.emitChange();
-        return endVisible + ammount > postList.order.length;
+        return endVisible + amount > postList.order.length;
     }
 
     getFocusedPostId() {
@@ -224,7 +238,7 @@ class PostStoreClass extends EventEmitter {
                 } else if (combinedPosts.posts.hasOwnProperty(pid)) {
                     combinedPosts.posts[pid] = Object.assign({}, np, {
                         state: Constants.POST_DELETED,
-                        filenames: []
+                        fileIds: []
                     });
                 }
             }
@@ -245,7 +259,7 @@ class PostStoreClass extends EventEmitter {
         this.postsInfo[id].postList = combinedPosts;
     }
 
-    storePost(post) {
+    storePost(post, isNewPost = false) {
         const postList = makePostListNonNull(this.getAllPosts(post.channel_id));
 
         if (post.pending_post_id !== '') {
@@ -255,7 +269,7 @@ class PostStoreClass extends EventEmitter {
         post.pending_post_id = '';
 
         postList.posts[post.id] = post;
-        if (postList.order.indexOf(post.id) === -1) {
+        if (isNewPost && postList.order.indexOf(post.id) === -1) {
             postList.order.unshift(post.id);
         }
 
@@ -318,7 +332,8 @@ class PostStoreClass extends EventEmitter {
             // make sure to copy the post so that component state changes work properly
             postList.posts[post.id] = Object.assign({}, post, {
                 state: Constants.POST_DELETED,
-                filenames: []
+                file_ids: [],
+                has_reactions: false
             });
         }
     }
@@ -513,8 +528,23 @@ class PostStoreClass extends EventEmitter {
         return lastPost;
     }
 
-    getEmptyDraft() {
-        return {message: '', uploadsInProgress: [], previews: []};
+    normalizeDraft(originalDraft) {
+        let draft = {
+            message: '',
+            uploadsInProgress: [],
+            fileInfos: []
+        };
+
+        // Make sure that the post draft is non-null and has all the required fields
+        if (originalDraft) {
+            draft = {
+                message: originalDraft.message || draft.message,
+                uploadsInProgress: originalDraft.uploadsInProgress || draft.uploadsInProgress,
+                fileInfos: originalDraft.fileInfos || draft.fileInfos
+            };
+        }
+
+        return draft;
     }
 
     storeCurrentDraft(draft) {
@@ -532,7 +562,7 @@ class PostStoreClass extends EventEmitter {
     }
 
     getDraft(channelId) {
-        return BrowserStore.getGlobalItem('draft_' + channelId, this.getEmptyDraft());
+        return this.normalizeDraft(BrowserStore.getGlobalItem('draft_' + channelId));
     }
 
     storeCommentDraft(parentPostId, draft) {
@@ -540,7 +570,7 @@ class PostStoreClass extends EventEmitter {
     }
 
     getCommentDraft(parentPostId) {
-        return BrowserStore.getGlobalItem('comment_draft_' + parentPostId, this.getEmptyDraft());
+        return this.normalizeDraft(BrowserStore.getGlobalItem('comment_draft_' + parentPostId));
     }
 
     clearDraftUploads() {
@@ -614,7 +644,7 @@ PostStore.dispatchToken = AppDispatcher.register((payload) => {
         PostStore.emitChange();
         break;
     case ActionTypes.RECEIVED_POST:
-        PostStore.storePost(action.post);
+        PostStore.storePost(action.post, true);
         PostStore.emitChange();
         break;
     case ActionTypes.RECEIVED_EDIT_POST:

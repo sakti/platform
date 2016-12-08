@@ -1,7 +1,7 @@
 // Copyright (c) 2015 Mattermost, Inc. All Rights Reserved.
 // See License.txt for license information.
 
-import AppDispatcher from '../dispatcher/app_dispatcher.jsx';
+import AppDispatcher from 'dispatcher/app_dispatcher.jsx';
 import Constants from 'utils/constants.jsx';
 import EventEmitter from 'events';
 
@@ -121,6 +121,11 @@ class SuggestionStore extends EventEmitter {
     }
 
     addSuggestions(id, terms, items, component, matchedPretext) {
+        if (!this.getPretext(id).endsWith(matchedPretext)) {
+            // These suggestions are out of date since the pretext has changed
+            return;
+        }
+
         const suggestion = this.suggestions.get(id);
 
         suggestion.terms.push(...terms);
@@ -218,11 +223,16 @@ class SuggestionStore extends EventEmitter {
     }
 
     handleEventPayload(payload) {
-        const {type, id, ...other} = payload.action; // eslint-disable-line no-use-before-define
+        const {type, id, ...other} = payload.action;
 
         switch (type) {
         case ActionTypes.SUGGESTION_PRETEXT_CHANGED:
-            this.clearSuggestions(id);
+            // Clear the suggestions if the pretext is empty or has whitespace
+            if (other.pretext === '' || (/\s/g.test(other.pretext))) {
+                this.clearSuggestions(id);
+            }
+
+            other.pretext = other.pretext.toLowerCase();
 
             this.setPretext(id, other.pretext);
             this.emitPretextChanged(id, other.pretext);
@@ -231,6 +241,8 @@ class SuggestionStore extends EventEmitter {
             this.emitSuggestionsChanged(id);
             break;
         case ActionTypes.SUGGESTION_RECEIVED_SUGGESTIONS:
+            this.clearSuggestions(id);
+
             // ensure the matched pretext hasn't changed so that we don't receive suggestions for outdated pretext
             this.addSuggestions(id, other.terms, other.items, other.component, other.matchedPretext);
 
@@ -238,6 +250,7 @@ class SuggestionStore extends EventEmitter {
             this.emitSuggestionsChanged(id);
             break;
         case ActionTypes.SUGGESTION_CLEAR_SUGGESTIONS:
+            this.setPretext(id, '');
             this.clearSuggestions(id);
             this.clearSelection(id);
             this.emitSuggestionsChanged(id);

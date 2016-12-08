@@ -5,11 +5,12 @@ package api
 
 import (
 	"fmt"
+	"strings"
+	"testing"
+
 	"github.com/mattermost/platform/model"
 	"github.com/mattermost/platform/store"
 	"github.com/mattermost/platform/utils"
-	"strings"
-	"testing"
 )
 
 func TestSignupTeam(t *testing.T) {
@@ -63,7 +64,7 @@ func TestCreateFromSignupTeam(t *testing.T) {
 	}
 
 	c1 := Client.Must(Client.GetChannels("")).Data.(*model.ChannelList)
-	if len(c1.Channels) != 2 {
+	if len(*c1) != 2 {
 		t.Fatal("default channels not created")
 	}
 
@@ -94,7 +95,7 @@ func TestCreateTeam(t *testing.T) {
 	Client.SetTeamId(rteam.Data.(*model.Team).Id)
 
 	c1 := Client.Must(Client.GetChannels("")).Data.(*model.ChannelList)
-	if len(c1.Channels) != 2 {
+	if len(*c1) != 2 {
 		t.Fatal("default channels not created")
 	}
 
@@ -315,10 +316,7 @@ func TestGetAllTeamListings(t *testing.T) {
 		}
 	}
 
-	c := &Context{}
-	c.RequestId = model.NewId()
-	c.IpAddress = "cmd_line"
-	UpdateUserRoles(c, user, model.ROLE_SYSTEM_ADMIN.Id)
+	UpdateUserRoles(user, model.ROLE_SYSTEM_ADMIN.Id)
 
 	Client.Login(user.Email, "passwd1")
 	Client.SetTeamId(team.Id)
@@ -371,7 +369,7 @@ func TestTeamPermDelete(t *testing.T) {
 	c.RequestId = model.NewId()
 	c.IpAddress = "test"
 
-	err := PermanentDeleteTeam(c, team)
+	err := PermanentDeleteTeam(team)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -560,10 +558,242 @@ func TestGetMyTeam(t *testing.T) {
 func TestGetTeamMembers(t *testing.T) {
 	th := Setup().InitBasic()
 
-	if result, err := th.BasicClient.GetTeamMembers(th.BasicTeam.Id); err != nil {
+	if result, err := th.BasicClient.GetTeamMembers(th.BasicTeam.Id, 0, 100); err != nil {
 		t.Fatal(err)
 	} else {
 		members := result.Data.([]*model.TeamMember)
-		t.Log(members)
+		if len(members) == 0 {
+			t.Fatal("should have results")
+		}
+	}
+
+	if _, err := th.BasicClient.GetTeamMembers("junk", 0, 100); err == nil {
+		t.Fatal("should have errored - bad team id")
+	}
+}
+
+func TestGetTeamMember(t *testing.T) {
+	th := Setup().InitBasic()
+
+	if result, err := th.BasicClient.GetTeamMember(th.BasicTeam.Id, th.BasicUser.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		member := result.Data.(*model.TeamMember)
+		if member == nil {
+			t.Fatal("should be valid")
+		}
+	}
+
+	if _, err := th.BasicClient.GetTeamMember("junk", th.BasicUser.Id); err == nil {
+		t.Fatal("should have errored - bad team id")
+	}
+
+	if _, err := th.BasicClient.GetTeamMember(th.BasicTeam.Id, ""); err == nil {
+		t.Fatal("should have errored - blank user id")
+	}
+
+	if _, err := th.BasicClient.GetTeamMember(th.BasicTeam.Id, "junk"); err == nil {
+		t.Fatal("should have errored - bad user id")
+	}
+
+	if _, err := th.BasicClient.GetTeamMember(th.BasicTeam.Id, "12345678901234567890123456"); err == nil {
+		t.Fatal("should have errored - bad user id")
+	}
+}
+
+func TestGetTeamMembersByIds(t *testing.T) {
+	th := Setup().InitBasic()
+
+	if result, err := th.BasicClient.GetTeamMembersByIds(th.BasicTeam.Id, []string{th.BasicUser.Id}); err != nil {
+		t.Fatal(err)
+	} else {
+		member := result.Data.([]*model.TeamMember)[0]
+		if member.UserId != th.BasicUser.Id {
+			t.Fatal("user id did not match")
+		}
+		if member.TeamId != th.BasicTeam.Id {
+			t.Fatal("team id did not match")
+		}
+	}
+
+	if result, err := th.BasicClient.GetTeamMembersByIds(th.BasicTeam.Id, []string{th.BasicUser.Id, th.BasicUser2.Id, model.NewId()}); err != nil {
+		t.Fatal(err)
+	} else {
+		members := result.Data.([]*model.TeamMember)
+		if len(members) != 2 {
+			t.Fatal("length should have been 2")
+		}
+	}
+
+	if _, err := th.BasicClient.GetTeamMembersByIds("junk", []string{th.BasicUser.Id}); err == nil {
+		t.Fatal("should have errored - bad team id")
+	}
+
+	if _, err := th.BasicClient.GetTeamMembersByIds(th.BasicTeam.Id, []string{}); err == nil {
+		t.Fatal("should have errored - empty user ids")
+	}
+}
+
+func TestUpdateTeamMemberRoles(t *testing.T) {
+	th := Setup().InitSystemAdmin().InitBasic()
+	th.SystemAdminClient.SetTeamId(th.BasicTeam.Id)
+	LinkUserToTeam(th.SystemAdminUser, th.BasicTeam)
+
+	const BASIC_MEMBER = "team_user"
+	const TEAM_ADMIN = "team_user team_admin"
+
+	// user 1 trying to promote user 2
+	if _, err := th.BasicClient.UpdateTeamRoles(th.BasicUser2.Id, TEAM_ADMIN); err == nil {
+		t.Fatal("Should have errored, not team admin")
+	}
+
+	// user 1 trying to promote themselves
+	if _, err := th.BasicClient.UpdateTeamRoles(th.BasicUser.Id, TEAM_ADMIN); err == nil {
+		t.Fatal("Should have errored, not team admin")
+	}
+
+	// user 1 trying to demote someone
+	if _, err := th.BasicClient.UpdateTeamRoles(th.SystemAdminUser.Id, BASIC_MEMBER); err == nil {
+		t.Fatal("Should have errored, not team admin")
+	}
+
+	// system admin promoting user1
+	if _, err := th.SystemAdminClient.UpdateTeamRoles(th.BasicUser.Id, TEAM_ADMIN); err != nil {
+		t.Fatal("Should have worked: " + err.Error())
+	}
+
+	// user 1 trying to promote user 2
+	if _, err := th.BasicClient.UpdateTeamRoles(th.BasicUser2.Id, TEAM_ADMIN); err != nil {
+		t.Fatal("Should have worked, user is team admin: " + th.BasicUser.Id)
+	}
+
+	// user 1 trying to demote user 2
+	if _, err := th.BasicClient.UpdateTeamRoles(th.BasicUser2.Id, BASIC_MEMBER); err != nil {
+		t.Fatal("Should have worked, user is team admin")
+	}
+
+	// user 1 trying to demote a system admin
+	if _, err := th.BasicClient.UpdateTeamRoles(th.SystemAdminUser.Id, BASIC_MEMBER); err != nil {
+		t.Fatal("Should have worked, user is team admin and has the ability to manage permissions on this team.")
+		// Note to anyone who thinks this test is wrong:
+		// This operation will not effect the system admin's permissions because they have global access to all teams.
+		// Their team level permissions are irrelavent. A team admin should be able to manage team level permissions.
+	}
+
+	// System admins should be able to manipulate permission no matter what their team level permissions are.
+	// systemAdmin trying to promote user 2
+	if _, err := th.SystemAdminClient.UpdateTeamRoles(th.BasicUser2.Id, TEAM_ADMIN); err != nil {
+		t.Fatal("Should have worked, user is system admin")
+	}
+
+	// system admin trying to demote user 2
+	if _, err := th.SystemAdminClient.UpdateTeamRoles(th.BasicUser2.Id, BASIC_MEMBER); err != nil {
+		t.Fatal("Should have worked, user is system admin")
+	}
+
+	// user 1 trying to demote himself
+	if _, err := th.BasicClient.UpdateTeamRoles(th.BasicUser.Id, BASIC_MEMBER); err != nil {
+		t.Fatal("Should have worked, user is team admin")
+	}
+}
+
+func TestGetTeamStats(t *testing.T) {
+	th := Setup().InitBasic().InitSystemAdmin()
+	Client := th.BasicClient
+
+	if result, err := th.SystemAdminClient.GetTeamStats(th.BasicTeam.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if result.Data.(*model.TeamStats).TotalMemberCount != 2 {
+			t.Fatal("wrong count")
+		}
+
+		if result.Data.(*model.TeamStats).ActiveMemberCount != 2 {
+			t.Fatal("wrong count")
+		}
+	}
+
+	th.SystemAdminClient.Must(th.SystemAdminClient.UpdateActive(th.BasicUser2.Id, false))
+
+	if result, err := th.SystemAdminClient.GetTeamStats(th.BasicTeam.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if result.Data.(*model.TeamStats).TotalMemberCount != 2 {
+			t.Fatal("wrong count")
+		}
+
+		if result.Data.(*model.TeamStats).ActiveMemberCount != 1 {
+			t.Fatal("wrong count")
+		}
+	}
+
+	if result, err := th.SystemAdminClient.GetTeamStats("junk"); err != nil {
+		t.Fatal(err)
+	} else {
+		if result.Data.(*model.TeamStats).TotalMemberCount != 0 {
+			t.Fatal("wrong count")
+		}
+
+		if result.Data.(*model.TeamStats).ActiveMemberCount != 0 {
+			t.Fatal("wrong count")
+		}
+	}
+
+	if result, err := th.SystemAdminClient.GetTeamStats(th.BasicTeam.Id); err != nil {
+		t.Fatal(err)
+	} else {
+		if result.Data.(*model.TeamStats).TotalMemberCount != 2 {
+			t.Fatal("wrong count")
+		}
+	}
+
+	user := model.User{Email: "success+" + model.NewId() + "@simulator.amazonses.com", Nickname: "Corey Hulen", Password: "passwd1"}
+	ruser, _ := Client.CreateUser(&user, "")
+	store.Must(Srv.Store.User().VerifyEmail(ruser.Data.(*model.User).Id))
+
+	Client.Login(user.Email, user.Password)
+
+	if _, err := Client.GetTeamStats(th.BasicTeam.Id); err == nil {
+		t.Fatal("should have errored - not on team")
+	}
+}
+
+func TestUpdateTeamDescription(t *testing.T) {
+	th := Setup().InitBasic()
+	th.BasicClient.Logout()
+	Client := th.BasicClient
+
+	team := &model.Team{DisplayName: "Name", Name: "z-z-" + model.NewId() + "a", Email: "success+" + model.NewId() + "@simulator.amazonses.com", Type: model.TEAM_OPEN}
+	team = Client.Must(Client.CreateTeam(team)).Data.(*model.Team)
+
+	user := &model.User{Email: team.Email, Nickname: "My Testing", Password: "passwd1"}
+	user = Client.Must(Client.CreateUser(user, "")).Data.(*model.User)
+	LinkUserToTeam(user, team)
+	store.Must(Srv.Store.User().VerifyEmail(user.Id))
+
+	user2 := &model.User{Email: "success+" + model.NewId() + "@simulator.amazonses.com", Nickname: "Jabba the Hutt", Password: "passwd1"}
+	user2 = Client.Must(Client.CreateUser(user2, "")).Data.(*model.User)
+	LinkUserToTeam(user2, team)
+	store.Must(Srv.Store.User().VerifyEmail(user2.Id))
+
+	Client.Login(user2.Email, "passwd1")
+	Client.SetTeamId(team.Id)
+
+	vteam := &model.Team{DisplayName: team.DisplayName, Name: team.Name, Description: team.Description, Email: team.Email, Type: team.Type}
+	vteam.Description = "yommamma"
+	if _, err := Client.UpdateTeam(vteam); err == nil {
+		t.Fatal("Should have errored, not admin")
+	}
+
+	Client.Login(user.Email, "passwd1")
+
+	vteam.Description = ""
+	if _, err := Client.UpdateTeam(vteam); err != nil {
+		t.Fatal("Should have errored, should save blank Description")
+	}
+
+	vteam.Description = "yommamma"
+	if _, err := Client.UpdateTeam(vteam); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -2,14 +2,13 @@
 // See License.txt for license information.
 
 import $ from 'jquery';
-import ReactDOM from 'react-dom';
 
 import Constants from 'utils/constants.jsx';
 import * as GlobalActions from 'actions/global_actions.jsx';
 import SuggestionStore from 'stores/suggestion_store.jsx';
 import * as Utils from 'utils/utils.jsx';
 
-import TextareaAutosize from 'react-textarea-autosize';
+import AutosizeTextarea from 'components/autosize_textarea.jsx';
 
 const KeyCodes = Constants.KeyCodes;
 
@@ -22,19 +21,33 @@ export default class SuggestionBox extends React.Component {
         this.handleDocumentClick = this.handleDocumentClick.bind(this);
 
         this.handleCompleteWord = this.handleCompleteWord.bind(this);
-        this.handleInput = this.handleInput.bind(this);
+        this.handleChange = this.handleChange.bind(this);
+        this.handleCompositionStart = this.handleCompositionStart.bind(this);
+        this.handleCompositionUpdate = this.handleCompositionUpdate.bind(this);
+        this.handleCompositionEnd = this.handleCompositionEnd.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
         this.handlePretextChanged = this.handlePretextChanged.bind(this);
 
         this.suggestionId = Utils.generateId();
         SuggestionStore.registerSuggestionBox(this.suggestionId);
+
+        // Keep track of whether we're composing a CJK character so we can make suggestions for partial characters
+        this.composing = false;
     }
 
     componentDidMount() {
-        $(document).on('click touchstart', this.handleDocumentClick);
+        $(document).on('click', this.handleDocumentClick);
 
         SuggestionStore.addCompleteWordListener(this.suggestionId, this.handleCompleteWord);
         SuggestionStore.addPretextChangedListener(this.suggestionId, this.handlePretextChanged);
+    }
+
+    componentWillReceiveProps(nextProps) {
+        // Clear any suggestions when the SuggestionBox is cleared
+        if (nextProps.value === '' && this.props.value !== nextProps.value) {
+            // TODO - Find a better way to not "dispatch during dispatch"
+            setTimeout(() => GlobalActions.emitClearSuggestions(this.suggestionId), 1);
+        }
     }
 
     componentWillUnmount() {
@@ -42,51 +55,77 @@ export default class SuggestionBox extends React.Component {
         SuggestionStore.removePretextChangedListener(this.suggestionId, this.handlePretextChanged);
 
         SuggestionStore.unregisterSuggestionBox(this.suggestionId);
-        $(document).off('click touchstart', this.handleDocumentClick);
+        $(document).off('click', this.handleDocumentClick);
     }
 
     getTextbox() {
-        // this is to support old code that looks at the input/textarea DOM nodes
-        let textbox = this.refs.textbox;
-
-        if (!(textbox instanceof HTMLElement)) {
-            textbox = ReactDOM.findDOMNode(textbox);
+        if (this.props.type === 'textarea') {
+            return this.refs.textbox.getDOMNode();
         }
 
-        return textbox;
+        return this.refs.textbox;
+    }
+
+    recalculateSize() {
+        if (this.props.type === 'textarea') {
+            this.refs.textbox.recalculateSize();
+        }
     }
 
     handleDocumentClick(e) {
-        const container = $(ReactDOM.findDOMNode(this));
-        if ($('.suggestion-list__content').length) {
-            if (!($(e.target).hasClass('suggestion-list__content') || $(e.target).parents().hasClass('suggestion-list__content'))) {
-                $('body').removeClass('modal-open');
-            }
+        if (!SuggestionStore.hasSuggestions(this.suggestionId)) {
+            return;
         }
+
+        const container = $(this.refs.container);
+
         if (!(container.is(e.target) || container.has(e.target).length > 0)) {
-            // we can't just use blur for this because it fires and hides the children before
+            // We can't just use blur for this because it fires and hides the children before
             // their click handlers can be called
             GlobalActions.emitClearSuggestions(this.suggestionId);
         }
     }
 
-    handleInput(e) {
-        const textbox = ReactDOM.findDOMNode(this.refs.textbox);
-        const caret = Utils.getCaretPosition(textbox);
-        const pretext = textbox.value.substring(0, caret);
+    handleChange(e) {
+        const textbox = this.getTextbox();
+        const pretext = textbox.value.substring(0, textbox.selectionEnd);
 
-        GlobalActions.emitSuggestionPretextChanged(this.suggestionId, pretext);
+        if (!this.composing && SuggestionStore.getPretext(this.suggestionId) !== pretext) {
+            GlobalActions.emitSuggestionPretextChanged(this.suggestionId, pretext);
+        }
 
-        if (this.props.onInput) {
-            this.props.onInput(e);
+        if (this.props.onChange) {
+            this.props.onChange(e);
         }
     }
 
+    handleCompositionStart() {
+        this.composing = true;
+    }
+
+    handleCompositionUpdate(e) {
+        if (!e.data) {
+            return;
+        }
+
+        // The caret appears before the CJK character currently being composed, so re-add it to the pretext
+        const textbox = this.getTextbox();
+        const pretext = textbox.value.substring(0, textbox.selectionStart) + e.data;
+
+        if (SuggestionStore.getPretext(this.suggestionId) !== pretext) {
+            GlobalActions.emitSuggestionPretextChanged(this.suggestionId, pretext);
+        }
+    }
+
+    handleCompositionEnd() {
+        this.composing = false;
+    }
+
     handleCompleteWord(term, matchedPretext) {
-        const textbox = this.refs.textbox;
-        const caret = Utils.getCaretPosition(textbox);
-        const text = textbox.value;
-        const pretext = text.substring(0, caret);
+        const textbox = this.getTextbox();
+        const caret = textbox.selectionEnd;
+        const text = this.props.value;
+        const pretext = textbox.value.substring(0, textbox.selectionEnd);
 
         let prefix;
         if (pretext.endsWith(matchedPretext)) {
@@ -103,15 +142,17 @@ export default class SuggestionBox extends React.Component {
 
         this.refs.textbox.value = prefix + term + ' ' + suffix;
 
-        if (this.props.onInput) {
+        if (this.props.onChange) {
             // fake an input event to send back to parent components
             const e = {
                 target: this.refs.textbox
             };
 
-            // don't call handleInput or we'll get into an event loop
-            this.props.onInput(e);
+            // don't call handleChange or we'll get into an event loop
+            this.props.onChange(e);
         }
+
+        textbox.focus();
 
         // set the caret position after the next rendering
         window.requestAnimationFrame(() => {
@@ -148,48 +189,62 @@ export default class SuggestionBox extends React.Component {
     }
 
     render() {
+        const {
+            type,
+            listComponent,
+            listStyle,
+            renderDividers,
+            ...props
+        } = this.props;
+
+        // Don't pass props used by SuggestionBox
+        Reflect.deleteProperty(props, 'providers');
+
+        const childProps = {
+            ref: 'textbox',
+            onInput: this.handleChange,
+            onCompositionStart: this.handleCompositionStart,
+            onCompositionUpdate: this.handleCompositionUpdate,
+            onCompositionEnd: this.handleCompositionEnd,
+            onKeyDown: this.handleKeyDown
+        };
+
         let textbox = null;
-        if (this.props.type === 'input') {
+        if (type === 'input') {
             textbox = (
                 <input
-                    ref='textbox'
                     type='text'
-                    {...this.props}
-                    onInput={this.handleInput}
-                    onKeyDown={this.handleKeyDown}
+                    {...props}
+                    {...childProps}
                 />
             );
-        } else if (this.props.type === 'search') {
+        } else if (type === 'search') {
             textbox = (
                 <input
-                    ref='textbox'
                     type='search'
-                    {...this.props}
-                    onInput={this.handleInput}
-                    onKeyDown={this.handleKeyDown}
+                    {...props}
+                    {...childProps}
                 />
             );
-        } else if (this.props.type === 'textarea') {
+        } else if (type === 'textarea') {
             textbox = (
-                <TextareaAutosize
-                    id={this.suggestionId}
-                    ref='textbox'
-                    {...this.props}
-                    onInput={this.handleInput}
-                    onKeyDown={this.handleKeyDown}
+                <AutosizeTextarea
+                    {...props}
+                    {...childProps}
                 />
             );
         }
 
-        const SuggestionListComponent = this.props.listComponent;
+        // This needs to be upper case so React doesn't think it's an html tag
+        const SuggestionListComponent = listComponent;
 
         return (
-            <div>
+            <div ref='container'>
                 {textbox}
                 <SuggestionListComponent
                     suggestionId={this.suggestionId}
-                    location={this.props.listStyle}
-                    renderDividers={this.props.renderDividers}
+                    location={listStyle}
+                    renderDividers={renderDividers}
                 />
             </div>
         );
@@ -224,6 +279,6 @@ SuggestionBox.propTypes = {
     renderDividers: React.PropTypes.bool,
 
     // explicitly name any input event handlers we override and need to manually call
-    onInput: React.PropTypes.func,
+    onChange: React.PropTypes.func,
     onKeyDown: React.PropTypes.func
 };

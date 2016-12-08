@@ -39,8 +39,6 @@ export default class LoginController extends React.Component {
         this.handleLoginIdChange = this.handleLoginIdChange.bind(this);
         this.handlePasswordChange = this.handlePasswordChange.bind(this);
 
-        this.checkSignUpEnabled = this.checkSignUpEnabled.bind(this);
-
         this.state = {
             ldapEnabled: global.window.mm_license.IsLicensed === 'true' && global.window.mm_config.EnableLdap === 'true',
             usernameSigninEnabled: global.window.mm_config.EnableSignInWithUsername === 'true',
@@ -152,8 +150,8 @@ export default class LoginController extends React.Component {
                         query.d,
                         query.h,
                         query.id,
-                        () => {
-                            this.finishSignin();
+                        (team) => {
+                            this.finishSignin(team);
                         },
                         () => {
                             // there's not really a good way to deal with this, so just let the user log in like normal
@@ -169,7 +167,6 @@ export default class LoginController extends React.Component {
             (err) => {
                 if (err.id === 'api.user.login.not_verified.app_error') {
                     browserHistory.push('/should_verify_email?&email=' + encodeURIComponent(loginId));
-                    return;
                 } else if (err.id === 'store.sql_user.get_for_login.app_error' ||
                     err.id === 'ent.ldap.do_login.user_not_registered.app_error') {
                     this.setState({
@@ -198,13 +195,15 @@ export default class LoginController extends React.Component {
         );
     }
 
-    finishSignin() {
+    finishSignin(team) {
         GlobalActions.emitInitialLoad(
             () => {
                 const query = this.props.location.query;
                 GlobalActions.loadDefaultLocale();
                 if (query.redirect_to) {
                     browserHistory.push(query.redirect_to);
+                } else if (team) {
+                    browserHistory.push(`/${team.name}`);
                 } else {
                     browserHistory.push('/select_team');
                 }
@@ -279,7 +278,10 @@ export default class LoginController extends React.Component {
     checkSignUpEnabled() {
         return global.window.mm_config.EnableSignUpWithEmail === 'true' ||
             global.window.mm_config.EnableSignUpWithGitLab === 'true' ||
-            global.window.mm_config.EnableSignUpWithGoogle === 'true';
+            global.window.mm_config.EnableSignUpWithOffice365 === 'true' ||
+            global.window.mm_config.EnableSignUpWithGoogle === 'true' ||
+            global.window.mm_config.EnableLdap === 'true' ||
+            global.window.mm_config.EnableSaml === 'true';
     }
 
     createLoginOptions() {
@@ -449,17 +451,6 @@ export default class LoginController extends React.Component {
                 </div>
             );
 
-            loginControls.push(
-                <h5 key='oauthHeader'>
-                    <FormattedMessage
-                        id='login.signInWith'
-                        defaultMessage='Sign in with:'
-                    />
-                </h5>
-            );
-        }
-
-        if (gitlabSigninEnabled || samlSigninEnabled || office365SigninEnabled || googleSigninEnabled || gitlabSigninEnabled) {
             loginControls.push(
                 <h5 key='oauthHeader'>
                     <FormattedMessage

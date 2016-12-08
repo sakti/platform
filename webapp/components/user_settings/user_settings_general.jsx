@@ -15,6 +15,7 @@ import * as AsyncClient from 'utils/async_client.jsx';
 import * as Utils from 'utils/utils.jsx';
 
 import {intlShape, injectIntl, defineMessages, FormattedMessage, FormattedHTMLMessage, FormattedDate} from 'react-intl';
+import {updateUser} from 'actions/user_actions.jsx';
 
 const holders = defineMessages({
     usernameReserved: {
@@ -95,7 +96,6 @@ class UserSettingsGeneralTab extends React.Component {
         this.updateSection = this.updateSection.bind(this);
 
         this.state = this.setupInitialState(props);
-        this.setState({maxFileSize: global.window.mm_config.MaxFileSize});
     }
 
     submitUsername(e) {
@@ -187,7 +187,7 @@ class UserSettingsGeneralTab extends React.Component {
     }
 
     submitUser(user, type, emailUpdated) {
-        Client.updateUser(user, type,
+        updateUser(user, type,
             () => {
                 this.updateSection('');
                 AsyncClient.getMe();
@@ -306,7 +306,8 @@ class UserSettingsGeneralTab extends React.Component {
             confirmEmail: '',
             picture: null,
             loadingPicture: false,
-            emailChangeInProgress: false
+            emailChangeInProgress: false,
+            maxFileSize: global.window.mm_config.MaxFileSize
         };
     }
 
@@ -461,7 +462,7 @@ class UserSettingsGeneralTab extends React.Component {
                 inputs.push(
                     <div
                         key='oauthEmailInfo'
-                        className='form-group'
+                        className='padding-bottom'
                     >
                         <div className='setting-list__hint'>
                             <FormattedMessage
@@ -479,7 +480,7 @@ class UserSettingsGeneralTab extends React.Component {
                 inputs.push(
                     <div
                         key='oauthEmailInfo'
-                        className='form-group'
+                        className='padding-bottom'
                     >
                         <div className='setting-list__hint'>
                             <FormattedMessage

@@ -4,7 +4,7 @@
 import $ from 'jquery';
 import ReactDOM from 'react-dom';
 import AppDispatcher from '../dispatcher/app_dispatcher.jsx';
-import Client from 'client/web_client.jsx';
+import EmojiStore from 'stores/emoji_store.jsx';
 import UserStore from 'stores/user_store.jsx';
 import PostDeletedModal from './post_deleted_modal.jsx';
 import PostStore from 'stores/post_store.jsx';
@@ -17,6 +17,7 @@ import FilePreview from './file_preview.jsx';
 import * as Utils from 'utils/utils.jsx';
 import * as UserAgent from 'utils/user_agent.jsx';
 import * as GlobalActions from 'actions/global_actions.jsx';
+import * as PostActions from 'actions/post_actions.jsx';
 
 import Constants from 'utils/constants.jsx';
 
@@ -24,6 +25,8 @@ import {FormattedMessage} from 'react-intl';
 
 const ActionTypes = Constants.ActionTypes;
 const KeyCodes = Constants.KeyCodes;
+
+import {REACTION_PATTERN} from './create_post.jsx';
 
 import React from 'react';
 
@@ -34,9 +37,12 @@ export default class CreateComment extends React.Component {
         this.lastTime = 0;
 
         this.handleSubmit = this.handleSubmit.bind(this);
+        this.handleSubmitPost = this.handleSubmitPost.bind(this);
+        this.handleSubmitReaction = this.handleSubmitReaction.bind(this);
         this.commentMsgKeyPress = this.commentMsgKeyPress.bind(this);
-        this.handleInput = this.handleInput.bind(this);
+        this.handleChange = this.handleChange.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
+        this.handleBlur = this.handleBlur.bind(this);
         this.handleUploadClick = this.handleUploadClick.bind(this);
         this.handleUploadStart = this.handleUploadStart.bind(this);
         this.handleFileUploadComplete = this.handleFileUploadComplete.bind(this);
@@ -53,12 +59,13 @@ export default class CreateComment extends React.Component {
 
         const draft = PostStore.getCommentDraft(this.props.rootId);
         this.state = {
-            messageText: draft.message,
+            message: draft.message,
             uploadsInProgress: draft.uploadsInProgress,
-            previews: draft.previews,
+            fileInfos: draft.fileInfos,
             submitting: false,
             ctrlSend: PreferenceStore.getBool(Constants.Preferences.CATEGORY_ADVANCED_SETTINGS, 'send_on_ctrl_enter'),
-            showPostDeletedModal: false
+            showPostDeletedModal: false,
+            lastBlurAt: 0
         };
     }
 
@@ -98,15 +105,9 @@ export default class CreateComment extends React.Component {
             return;
         }
 
-        const post = {};
-        post.filenames = [];
-        post.message = this.state.messageText;
+        const message = this.state.message;
 
-        if (post.message.trim().length === 0 && this.state.previews.length === 0) {
-            return;
-        }
-
-        if (post.message.length > Constants.CHARACTER_LIMIT) {
+        if (message.length > Constants.CHARACTER_LIMIT) {
             this.setState({
                 postError: (
                     <FormattedMessage
@@ -119,38 +120,58 @@ export default class CreateComment extends React.Component {
             return;
         }
 
-        MessageHistoryStore.storeMessageInHistory(this.state.messageText);
+        MessageHistoryStore.storeMessageInHistory(message);
 
+        if (message.trim().length === 0 && this.state.fileInfos.length === 0) {
+            return;
+        }
+
+        const isReaction = REACTION_PATTERN.exec(message);
+        if (isReaction && EmojiStore.has(isReaction[2])) {
+            this.handleSubmitReaction(isReaction);
+        } else {
+            this.handleSubmitPost(message);
+        }
+
+        this.setState({
+            message: '',
+            submitting: false,
+            postError: null,
+            fileInfos: [],
+            serverError: null
+        });
+
+        const fasterThanHumanWillClick = 150;
+        const forceFocus = (Date.now() - this.state.lastBlurAt < fasterThanHumanWillClick);
+        this.focusTextbox(forceFocus);
+    }
+
+    handleSubmitPost(message) {
         const userId = UserStore.getCurrentId();
+        const time = Utils.getTimestamp();
 
+        const post = {};
+        post.file_ids = [];
+        post.message = message;
         post.channel_id = this.props.channelId;
         post.root_id = this.props.rootId;
         post.parent_id = this.props.rootId;
-        post.filenames = this.state.previews;
-        const time = Utils.getTimestamp();
+        post.file_ids = this.state.fileInfos.map((info) => info.id);
         post.pending_post_id = `${userId}:${time}`;
         post.user_id = userId;
         post.create_at = time;
 
         GlobalActions.emitUserCommentedEvent(post);
-        Client.createPost(
-            post,
-            (data) => {
-                PostStore.removePendingPost(post.channel_id, post.pending_post_id);
 
-                AppDispatcher.handleServerAction({
-                    type: ActionTypes.RECEIVED_POST,
-                    post: data
-                });
+        PostActions.createPost(post, false,
+            () => {
+                // DO nothing.
             },
             (err) => {
                 if (err.id === 'api.post.create_post.root_id.app_error') {
                     this.showPostDeletedModal();
-
-                    PostStore.removePendingPost(post.channel_id, post.pending_post_id);
                 } else {
-                    post.state = Constants.POST_FAILED;
-                    PostStore.updatePendingPost(post);
+                    this.forceUpdate();
                 }
 
                 this.setState({
@@ -160,16 +181,35 @@ export default class CreateComment extends React.Component {
         );
 
         this.setState({
-            messageText: '',
+            message: '',
             submitting: false,
             postError: null,
-            previews: [],
+            fileInfos: [],
             serverError: null
         });
+
+        const fasterThanHumanWillClick = 150;
+        const forceFocus = (Date.now() - this.state.lastBlurAt < fasterThanHumanWillClick);
+        this.focusTextbox(forceFocus);
+    }
+
+    handleSubmitReaction(isReaction) {
+        const action = isReaction[1];
+
+        const emojiName = isReaction[2];
+        const postId = this.props.latestPostId;
+
+        if (action === '+') {
+            PostActions.addReaction(this.props.channelId, postId, emojiName);
+        } else if (action === '-') {
+            PostActions.removeReaction(this.props.channelId, postId, emojiName);
+        }
+
+        PostStore.storeCommentDraft(this.props.rootId, null);
     }
 
     commentMsgKeyPress(e) {
-        if (!UserAgent.isMobileApp() && ((this.state.ctrlSend && e.ctrlKey) || !this.state.ctrlSend)) {
+        if (!UserAgent.isMobile() && ((this.state.ctrlSend && e.ctrlKey) || !this.state.ctrlSend)) {
             if (e.which === KeyCodes.ENTER && !e.shiftKey && !e.altKey) {
                 e.preventDefault();
                 ReactDOM.findDOMNode(this.refs.textbox).blur();
@@ -180,16 +220,16 @@ export default class CreateComment extends React.Component {
         GlobalActions.emitLocalUserTypingEvent(this.props.channelId, this.props.rootId);
     }
 
-    handleInput(e) {
-        const messageText = e.target.value;
+    handleChange(e) {
+        const message = e.target.value;
 
         const draft = PostStore.getCommentDraft(this.props.rootId);
-        draft.message = messageText;
+        draft.message = message;
         PostStore.storeCommentDraft(this.props.rootId, draft);
 
         $('.post-right__scroll').parent().scrollTop($('.post-right__scroll')[0].scrollHeight);
 
-        this.setState({messageText});
+        this.setState({message});
     }
 
     handleKeyDown(e) {
@@ -198,7 +238,7 @@ export default class CreateComment extends React.Component {
             return;
         }
 
-        if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.keyCode === KeyCodes.UP && this.state.messageText === '') {
+        if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.keyCode === KeyCodes.UP && this.state.message === '') {
             e.preventDefault();
 
             const lastPost = PostStore.getCurrentUsersLatestPost(this.props.channelId, this.props.rootId);
@@ -218,11 +258,11 @@ export default class CreateComment extends React.Component {
         }
 
         if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && (e.keyCode === Constants.KeyCodes.UP || e.keyCode === Constants.KeyCodes.DOWN)) {
-            const lastMessage = MessageHistoryStore.nextMessageInHistory(e.keyCode, this.state.messageText, 'comment');
+            const lastMessage = MessageHistoryStore.nextMessageInHistory(e.keyCode, this.state.message, 'comment');
             if (lastMessage !== null) {
                 e.preventDefault();
                 this.setState({
-                    messageText: lastMessage
+                    message: lastMessage
                 });
             }
         }
@@ -245,7 +285,7 @@ export default class CreateComment extends React.Component {
         this.focusTextbox();
     }
 
-    handleFileUploadComplete(filenames, clientIds) {
+    handleFileUploadComplete(fileInfos, clientIds) {
         const draft = PostStore.getCommentDraft(this.props.rootId);
 
         // remove each finished file from uploads
@@ -257,10 +297,10 @@ export default class CreateComment extends React.Component {
             }
         }
 
-        draft.previews = draft.previews.concat(filenames);
+        draft.fileInfos = draft.fileInfos.concat(fileInfos);
         PostStore.storeCommentDraft(this.props.rootId, draft);
 
-        this.setState({uploadsInProgress: draft.uploadsInProgress, previews: draft.previews});
+        this.setState({uploadsInProgress: draft.uploadsInProgress, fileInfos: draft.fileInfos});
     }
 
     handleUploadError(err, clientId) {
@@ -281,11 +321,11 @@ export default class CreateComment extends React.Component {
     }
 
     removePreview(id) {
-        const previews = this.state.previews;
+        const fileInfos = this.state.fileInfos;
         const uploadsInProgress = this.state.uploadsInProgress;
 
-        // id can either be the path of an uploaded file or the client id of an in progress upload
-        let index = previews.indexOf(id);
+        // id can either be the id of an uploaded file or the client id of an in progress upload
+        let index = fileInfos.findIndex((info) => info.id === id);
         if (index === -1) {
             index = uploadsInProgress.indexOf(id);
 
@@ -294,30 +334,30 @@ export default class CreateComment extends React.Component {
                 this.refs.fileUpload.getWrappedInstance().cancelUpload(id);
             }
         } else {
-            previews.splice(index, 1);
+            fileInfos.splice(index, 1);
         }
 
         const draft = PostStore.getCommentDraft(this.props.rootId);
-        draft.previews = previews;
+        draft.fileInfos = fileInfos;
         draft.uploadsInProgress = uploadsInProgress;
         PostStore.storeCommentDraft(this.props.rootId, draft);
 
-        this.setState({previews, uploadsInProgress});
+        this.setState({fileInfos, uploadsInProgress});
     }
 
     componentWillReceiveProps(newProps) {
         if (newProps.rootId !== this.props.rootId) {
             const draft = PostStore.getCommentDraft(newProps.rootId);
-            this.setState({messageText: draft.message, uploadsInProgress: draft.uploadsInProgress, previews: draft.previews});
+            this.setState({message: draft.message, uploadsInProgress: draft.uploadsInProgress, fileInfos: draft.fileInfos});
         }
     }
 
     getFileCount() {
-        return this.state.previews.length + this.state.uploadsInProgress.length;
+        return this.state.fileInfos.length + this.state.uploadsInProgress.length;
     }
 
-    focusTextbox() {
-        if (!Utils.isMobile()) {
+    focusTextbox(keepFocus = false) {
+        if (keepFocus || !Utils.isMobile()) {
             this.refs.textbox.focus();
         }
     }
@@ -332,6 +372,10 @@ export default class CreateComment extends React.Component {
         this.setState({
             showPostDeletedModal: false
         });
+    }
+
+    handleBlur() {
+        this.setState({lastBlurAt: Date.now()});
     }
 
     render() {
@@ -350,10 +394,10 @@ export default class CreateComment extends React.Component {
         }
 
         let preview = null;
-        if (this.state.previews.length > 0 || this.state.uploadsInProgress.length > 0) {
+        if (this.state.fileInfos.length > 0 || this.state.uploadsInProgress.length > 0) {
             preview = (
                 <FilePreview
-                    files={this.state.previews}
+                    fileInfos={this.state.fileInfos}
                     onRemove={this.removePreview}
                     uploadsInProgress={this.state.uploadsInProgress}
                 />
@@ -393,13 +437,15 @@ export default class CreateComment extends React.Component {
                     >
                         <div className='post-body__cell'>
                             <Textbox
-                                onInput={this.handleInput}
+                                onChange={this.handleChange}
                                 onKeyPress={this.commentMsgKeyPress}
                                 onKeyDown={this.handleKeyDown}
-                                messageText={this.state.messageText}
+                                value={this.state.message}
+                                onBlur={this.handleBlur}
                                 createMessage={Utils.localizeMessage('create_comment.addComment', 'Add a comment...')}
                                 initialText=''
                                 supportsCommands={false}
+                                channelId={this.props.channelId}
                                 id='reply_textbox'
                                 ref='textbox'
                             />
@@ -443,5 +489,6 @@ export default class CreateComment extends React.Component {
 
 CreateComment.propTypes = {
     channelId: React.PropTypes.string.isRequired,
-    rootId: React.PropTypes.string.isRequired
+    rootId: React.PropTypes.string.isRequired,
+    latestPostId: React.PropTypes.string
 };

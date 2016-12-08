@@ -90,14 +90,15 @@ export default class GetLinkModal extends React.Component {
                 className='form-control no-resize min-height'
                 ref='textarea'
                 value={this.props.link}
+                readOnly={true}
             />
         );
 
-        var copyLinkConfirm = null;
+        let copyLinkConfirm = null;
         if (this.state.copiedLink) {
             copyLinkConfirm = (
                 <p className='alert alert-success alert--confirm'>
-                    <i className='fa fa-check'></i>
+                    <i className='fa fa-check'/>
                     <FormattedMessage
                         id='get_link.clipboard'
                         defaultMessage=' Link copied to clipboard.'

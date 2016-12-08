@@ -3,6 +3,7 @@
 
 import $ from 'jquery';
 import AtMentionProvider from './suggestion/at_mention_provider.jsx';
+import ChannelMentionProvider from './suggestion/channel_mention_provider.jsx';
 import CommandProvider from './suggestion/command_provider.jsx';
 import EmoticonProvider from './suggestion/emoticon_provider.jsx';
 import SuggestionList from './suggestion/suggestion_list.jsx';
@@ -24,10 +25,11 @@ export default class Textbox extends React.Component {
         super(props);
 
         this.focus = this.focus.bind(this);
-        this.getStateFromStores = this.getStateFromStores.bind(this);
+        this.recalculateSize = this.recalculateSize.bind(this);
         this.onRecievedError = this.onRecievedError.bind(this);
         this.handleKeyPress = this.handleKeyPress.bind(this);
         this.handleKeyDown = this.handleKeyDown.bind(this);
+        this.handleBlur = this.handleBlur.bind(this);
         this.handleHeightChange = this.handleHeightChange.bind(this);
         this.showPreview = this.showPreview.bind(this);
 
@@ -35,20 +37,14 @@ export default class Textbox extends React.Component {
             connection: ''
         };
 
-        this.suggestionProviders = [new AtMentionProvider(), new EmoticonProvider()];
+        this.suggestionProviders = [
+            new AtMentionProvider(this.props.channelId),
+            new ChannelMentionProvider(),
+            new EmoticonProvider()
+        ];
         if (props.supportsCommands) {
             this.suggestionProviders.push(new CommandProvider());
         }
-    }
-
-    getStateFromStores() {
-        const error = ErrorStore.getLastError();
-
-        if (error) {
-            return {message: error.message};
-        }
-
-        return {message: null};
     }
 
     componentDidMount() {
@@ -79,13 +75,16 @@ export default class Textbox extends React.Component {
         }
     }
 
-    handleHeightChange(height) {
-        const textbox = $(this.refs.message.getTextbox());
+    handleBlur(e) {
+        if (this.props.onBlur) {
+            this.props.onBlur(e);
+        }
+    }
+
+    handleHeightChange(height, maxHeight) {
         const wrapper = $(this.refs.wrapper);
 
-        const maxHeight = parseInt(textbox.css('max-height'), 10);
-
-        // move over attachment icon to compensate for the scrollbar
+        // Move over attachment icon to compensate for the scrollbar
         if (height > maxHeight) {
             wrapper.closest('.post-body__cell').addClass('scroll');
         } else {
@@ -94,7 +93,14 @@ export default class Textbox extends React.Component {
     }
 
     focus() {
-        this.refs.message.getTextbox().focus();
+        const textbox = this.refs.message.getTextbox();
+
+        textbox.focus();
+        Utils.placeCaretAtEnd(textbox);
+    }
+
+    recalculateSize() {
+        this.refs.message.recalculateSize();
     }
 
     showPreview(e) {
@@ -103,8 +109,20 @@ export default class Textbox extends React.Component {
         this.setState({preview: !this.state.preview});
     }
 
+    componentWillReceiveProps(nextProps) {
+        if (nextProps.channelId !== this.props.channelId) {
+            // Update channel id for AtMentionProvider.
+            const providers = this.suggestionProviders;
+            for (let i = 0; i < providers.length; i++) {
+                if (providers[i] instanceof AtMentionProvider) {
+                    providers[i] = new AtMentionProvider(nextProps.channelId);
+                }
+            }
+        }
+    }
+
     render() {
-        const hasText = this.props.messageText.length > 0;
+        const hasText = this.props.value && this.props.value.length > 0;
 
         let previewLink = null;
         if (Utils.isFeatureEnabled(PreReleaseFeatures.MARKDOWN_PREVIEW)) {
@@ -187,26 +205,25 @@ export default class Textbox extends React.Component {
                     className={`form-control custom-textarea ${this.state.connection}`}
                     type='textarea'
                     spellCheck='true'
-                    maxLength={Constants.MAX_POST_LEN}
                     placeholder={this.props.createMessage}
-                    onInput={this.props.onInput}
+                    onChange={this.props.onChange}
                     onKeyPress={this.handleKeyPress}
                     onKeyDown={this.handleKeyDown}
+                    onBlur={this.handleBlur}
                     onHeightChange={this.handleHeightChange}
                     style={{visibility: this.state.preview ? 'hidden' : 'visible'}}
                     listComponent={SuggestionList}
                     providers={this.suggestionProviders}
                     channelId={this.props.channelId}
-                    value={this.props.messageText}
+                    value={this.props.value}
                     renderDividers={true}
                 />
                 <div
                     ref='preview'
                     className='form-control custom-textarea textbox-preview-area'
                     style={{display: this.state.preview ? 'block' : 'none'}}
-                    dangerouslySetInnerHTML={{__html: this.state.preview ? TextFormatting.formatText(this.props.messageText) : ''}}
-                >
-                </div>
+                    dangerouslySetInnerHTML={{__html: this.state.preview ? TextFormatting.formatText(this.props.value) : ''}}
+                />
                 <div className='help__text'>
                     {helpText}
                     {previewLink}
@@ -234,10 +251,11 @@ Textbox.defaultProps = {
 Textbox.propTypes = {
     id: React.PropTypes.string.isRequired,
     channelId: React.PropTypes.string,
-    messageText: React.PropTypes.string.isRequired,
-    onInput: React.PropTypes.func.isRequired,
+    value: React.PropTypes.string.isRequired,
+    onChange: React.PropTypes.func.isRequired,
     onKeyPress: React.PropTypes.func.isRequired,
     createMessage: React.PropTypes.string.isRequired,
     onKeyDown: React.PropTypes.func,
+    onBlur: React.PropTypes.func,
     supportsCommands: React.PropTypes.bool.isRequired
 };

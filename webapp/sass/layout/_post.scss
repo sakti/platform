@@ -22,31 +22,6 @@
     color: #d04444 !important;
 }
 
-.textarea-div {
-    border: 0;
-    color: rgba(0,0,0,0);
-    height: auto;
-    left: 1px;
-    line-height: 20px;
-    min-height: 36px;
-    position: absolute;
-    top: 0px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    word-wrap: normal;
-}
-
-body.ios {
-    .textarea-div {
-        -webkit-overflow-scrolling: auto;
-        padding: 7px 17px 7px 15px;
-    }
-}
-
-.textarea-div::-webkit-scrollbar {
-    display: none;
-}
-
 .textarea-wrapper {
     min-height: 36px;
     position: relative;
@@ -283,6 +258,33 @@ body.ios {
         outline: none;
         text-align: center;
     }
+    .nav-pills__unread-indicator-bottom {
+      position: absolute;
+      bottom: -30px;
+      left: 0;
+      right: 0;
+
+      @include border-radius(50px);
+      font-size: 13.5px;
+      margin: 0 auto;
+      padding: 3px 0 4px;
+      text-align: center;
+      max-width: 250px;
+      z-index: 1;
+      cursor: pointer;
+      transition: bottom 0.2s ease-out;
+
+      .fa {
+        margin-right: 0.5rem;
+      }
+
+      &.visible {
+        bottom: 0;
+      }
+      &.disabled {
+        display: none;
+      }
+    }
 }
 
 .post-list__timestamp {
@@ -390,7 +392,6 @@ body.ios {
 
         .custom-textarea {
             bottom: 0;
-            line-height: 1.5;
             max-height: 162px !important;
             padding-right: 28px;
             padding-top: 8px;
@@ -435,12 +436,22 @@ body.ios {
         @include clearfix;
         font-size: 13px;
         padding: 3px 0 0;
+        position: relative;
 
         .control-label {
             font-weight: normal;
             margin-bottom: 0;
             position: relative;
             top: -5px;
+
+            &.post-error {
+              display: inline-block;
+              font-size: .85em;
+              @include opacity(.55);
+              color: rgb(51, 51, 51);
+              position: absolute;
+              top: 4px;
+            }
         }
     }
 
@@ -527,6 +538,18 @@ body.ios {
         &.post--thread {
             .post__header {
                 padding-top: 3px;
+            }
+        }
+
+        .post__img {
+            padding-top: 0;
+        }
+
+        .status-wrapper {
+            height: 14px;
+
+            &:after {
+                bottom: 0;
             }
         }
 
@@ -636,14 +659,19 @@ body.ios {
 
         .post__img {
             padding-top: 3px;
-            width: 27px;
+            width: 16px;
 
             img,
             svg {
                 height: 20px;
-                width: 20px;
+                visibility: hidden;
+                width: 9px;
             }
         }
+    }
+
+    .post__img:hover {
+        cursor: pointer;
     }
 
     .post--fail {
@@ -964,6 +992,7 @@ body.ios {
 
         ul,
         ol {
+            font-size: .97em;
             margin-bottom: .4em;
             padding-left: 20px;
 
@@ -1213,4 +1242,32 @@ body.ios {
 .permalink-popover {
     margin-left: 50px !important;
     min-width: 320px;
+}
+
+.post-reaction-list {
+    height: 24px;
+}
+
+.post-reaction {
+    border: 1px solid $primary-color;
+    border-radius: 3px;
+    cursor: pointer;
+    display: inline-block;
+    padding: 1px 2px;
+    @include user-select(none);
+
+    .post-reaction__emoji {
+        height: 14px;
+        margin-top: 3px;
+        width: 14px;
+        vertical-align: top;
+    }
+
+    & + & {
+        margin-left: 5px;
+    }
+
+    &--current-user {
+        // background-colour set by theme code
+    }
 }

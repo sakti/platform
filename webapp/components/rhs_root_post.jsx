@@ -4,8 +4,10 @@
 import UserProfile from './user_profile.jsx';
 import PostBodyAdditionalContent from 'components/post_view/components/post_body_additional_content.jsx';
 import PostMessageContainer from 'components/post_view/components/post_message_container.jsx';
-import FileAttachmentList from './file_attachment_list.jsx';
+import FileAttachmentListContainer from './file_attachment_list_container.jsx';
 import ProfilePicture from 'components/profile_picture.jsx';
+import ReactionListContainer from 'components/post_view/components/reaction_list_container.jsx';
+import RhsDropdown from 'components/rhs_dropdown.jsx';
 
 import ChannelStore from 'stores/channel_store.jsx';
 import UserStore from 'stores/user_store.jsx';
@@ -20,7 +22,7 @@ import * as PostUtils from 'utils/post_utils.jsx';
 import Constants from 'utils/constants.jsx';
 import {Tooltip, OverlayTrigger} from 'react-bootstrap';
 
-import {FormattedMessage, FormattedDate} from 'react-intl';
+import {FormattedMessage} from 'react-intl';
 
 import React from 'react';
 
@@ -57,7 +59,15 @@ export default class RhsRootPost extends React.Component {
             return true;
         }
 
+        if (nextProps.previewCollapsed !== this.props.previewCollapsed) {
+            return true;
+        }
+
         if (!Utils.areObjectsEqual(nextProps.post, this.props.post)) {
+            return true;
+        }
+
+        if (!Utils.areObjectsEqual(nextProps.user, this.props.user)) {
             return true;
         }
 
@@ -85,7 +95,7 @@ export default class RhsRootPost extends React.Component {
         var isOwner = this.props.currentUser.id === post.user_id;
         var isAdmin = TeamStore.isTeamAdminForCurrentTeam() || UserStore.isSystemAdminForCurrentUser();
         const isSystemMessage = post.type && post.type.startsWith(Constants.SYSTEM_MESSAGE_PREFIX);
-        var timestamp = UserStore.getProfile(post.user_id).update_at;
+        var timestamp = user ? user.update_at : 0;
         var channel = ChannelStore.get(post.channel_id);
         const flagIcon = Constants.FLAG_ICON_SVG;
 
@@ -224,31 +234,15 @@ export default class RhsRootPost extends React.Component {
         var rootOptions = '';
         if (dropdownContents.length > 0) {
             rootOptions = (
-                <div className='dropdown'>
-                    <a
-                        href='#'
-                        className='post__dropdown dropdown-toggle'
-                        type='button'
-                        data-toggle='dropdown'
-                        aria-expanded='false'
-                    />
-                    <ul
-                        className='dropdown-menu'
-                        role='menu'
-                    >
-                        {dropdownContents}
-                    </ul>
-                </div>
+                <RhsDropdown dropdownContents={dropdownContents}/>
             );
         }
 
-        var fileAttachment;
-        if (post.filenames && post.filenames.length > 0) {
+        let fileAttachment = null;
+        if (post.file_ids && post.file_ids.length > 0) {
             fileAttachment = (
-                <FileAttachmentList
-                    filenames={post.filenames}
-                    channelId={post.channel_id}
-                    userId={post.user_id}
+                <FileAttachmentListContainer
+                    post={post}
                     compactDisplay={this.props.compactDisplay}
                 />
             );
@@ -280,12 +274,18 @@ export default class RhsRootPost extends React.Component {
             );
         }
 
+        let status = this.props.status;
+        if (post.props && post.props.from_webhook === 'true') {
+            status = null;
+        }
+
         let profilePic = (
             <ProfilePicture
                 src={PostUtils.getProfilePicSrcForPost(post, timestamp)}
-                status={this.props.status}
+                status={status}
                 width='36'
                 height='36'
+                user={this.props.user}
             />
         );
 
@@ -299,12 +299,19 @@ export default class RhsRootPost extends React.Component {
         }
 
         let compactClass = '';
-        let profilePicContainer = (<div className='post__img'>{profilePic}</div>);
         if (this.props.compactDisplay) {
             compactClass = 'post--compact';
-            profilePicContainer = '';
+
+            profilePic = (
+                <ProfilePicture
+                    src=''
+                    status={this.props.status}
+                    user={this.props.user}
+                />
+            );
         }
 
+        const profilePicContainer = (<div className='post__img'>{profilePic}</div>);
         const messageWrapper = <PostMessageContainer post={post}/>;
 
         let flag;
@@ -345,6 +352,15 @@ export default class RhsRootPost extends React.Component {
             flagFunc = this.flagPost;
         }
 
+        const timeOptions = {
+            day: 'numeric',
+            month: 'short',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+            hour12: !this.props.useMilitaryTime
+        };
+
         return (
             <div className={'post post--root post--thread ' + userCss + ' ' + systemMessageClass + ' ' + compactClass}>
                 <div className='post-right-channel__name'>{channelName}</div>
@@ -356,15 +372,7 @@ export default class RhsRootPost extends React.Component {
                             {botIndicator}
                             <li className='col'>
                                 <time className='post__time'>
-                                    <FormattedDate
-                                        value={post.create_at}
-                                        day='numeric'
-                                        month='short'
-                                        year='numeric'
-                                        hour12={!this.props.useMilitaryTime}
-                                        hour='2-digit'
-                                        minute='2-digit'
-                                    />
+                                    {Utils.getDateForUnixTicks(post.create_at).toLocaleString('en', timeOptions)}
                                 </time>
                                 <OverlayTrigger
                                     key={'rootpostflagtooltipkey' + flagVisible}
@@ -389,8 +397,13 @@ export default class RhsRootPost extends React.Component {
                             <PostBodyAdditionalContent
                                 post={post}
                                 message={messageWrapper}
+                                previewCollapsed={this.props.previewCollapsed}
                             />
                             {fileAttachment}
+                            <ReactionListContainer
+                                post={post}
+                                currentUserId={this.props.currentUser.id}
+                            />
                         </div>
                     </div>
                 </div>
@@ -410,5 +423,6 @@ RhsRootPost.propTypes = {
     compactDisplay: React.PropTypes.bool,
     useMilitaryTime: React.PropTypes.bool.isRequired,
     isFlagged: React.PropTypes.bool,
-    status: React.PropTypes.string
+    status: React.PropTypes.string,
+    previewCollapsed: React.PropTypes.string
 };
